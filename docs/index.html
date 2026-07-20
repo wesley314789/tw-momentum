@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>台股強勢股掃描</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#141922; --surface:#1b212d; --surface-2:#212938;
+  --line:#2b3446; --text:#e9e5da; --muted:#8b93a3;
+  --up:#f2564a; --up-dim:rgba(242,86,74,.12);
+  --down:#33bd8e; --down-dim:rgba(51,189,142,.12);
+  --amber:#e8b34b;
+  --mono:"IBM Plex Mono",ui-monospace,monospace;
+  --sans:"Noto Sans TC",system-ui,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:var(--sans);
+  font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased}
+a{color:inherit;text-decoration:none}
+
+header{padding:28px 24px 0;max-width:1080px;margin:0 auto}
+.brand{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap}
+.brand h1{font-size:22px;font-weight:700;letter-spacing:.06em}
+.brand h1 span{color:var(--up)}
+.meta{font-family:var(--mono);font-size:12px;color:var(--muted)}
+
+.tabs{display:flex;gap:4px;margin-top:20px;border-bottom:1px solid var(--line)}
+.tab{padding:10px 18px;cursor:pointer;color:var(--muted);font-weight:500;
+  border:none;background:none;font-size:14px;font-family:var(--sans);
+  border-bottom:2px solid transparent;transition:color .15s}
+.tab:hover{color:var(--text)}
+.tab.active{color:var(--text);border-bottom-color:var(--up)}
+.tab .count{font-family:var(--mono);font-size:12px;color:var(--muted);margin-left:6px}
+.tab:focus-visible{outline:2px solid var(--amber);outline-offset:2px}
+
+.controls{display:flex;gap:10px;flex-wrap:wrap;align-items:center;
+  max-width:1080px;margin:16px auto 0;padding:0 24px}
+.controls input,.controls select{background:var(--surface);color:var(--text);
+  border:1px solid var(--line);border-radius:6px;padding:7px 12px;
+  font-family:var(--sans);font-size:13px}
+.controls input:focus,.controls select:focus{outline:2px solid var(--amber);outline-offset:1px}
+.controls input{width:200px}
+.hint{font-size:12px;color:var(--muted);margin-left:auto}
+
+main{max-width:1080px;margin:14px auto 60px;padding:0 24px;overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:13px}
+thead th{position:sticky;top:0;background:var(--bg);color:var(--muted);
+  font-weight:500;font-size:12px;text-align:right;padding:10px 12px;
+  border-bottom:1px solid var(--line);cursor:pointer;white-space:nowrap;
+  user-select:none;font-family:var(--sans)}
+thead th:first-child,thead th:nth-child(2){text-align:left}
+thead th:hover{color:var(--text)}
+thead th .arr{opacity:.7;margin-left:2px}
+tbody td{padding:9px 12px;text-align:right;border-bottom:1px solid
+  color-mix(in srgb,var(--line) 45%,transparent);white-space:nowrap}
+tbody td:first-child,tbody td:nth-child(2){text-align:left}
+tbody tr{transition:background .1s;cursor:pointer}
+tbody tr:hover{background:var(--surface)}
+.name{font-family:var(--sans);font-weight:500}
+.mk{font-size:11px;color:var(--muted);margin-left:6px;font-family:var(--sans)}
+.up{color:var(--up)} .down{color:var(--down)} .flat{color:var(--muted)}
+
+/* RS 強度格:本頁的招牌元素 */
+.rs-cell{display:inline-flex;align-items:center;gap:8px;justify-content:flex-end}
+.rs-bar{width:56px;height:6px;border-radius:3px;background:var(--surface-2);
+  overflow:hidden;flex:none}
+.rs-bar i{display:block;height:100%;border-radius:3px;
+  background:linear-gradient(90deg,#7d6a3a,var(--amber))}
+.rs-num{width:24px;text-align:right}
+
+.badge{display:inline-block;padding:1px 7px;border-radius:4px;font-size:12px}
+.badge.up{background:var(--up-dim)} .badge.down{background:var(--down-dim)}
+
+.empty{padding:60px 0;text-align:center;color:var(--muted)}
+.empty code{font-family:var(--mono);background:var(--surface);
+  padding:2px 8px;border-radius:4px}
+
+footer{max-width:1080px;margin:0 auto 40px;padding:0 24px;
+  font-size:12px;color:var(--muted);border-top:1px solid var(--line);
+  padding-top:16px}
+
+@media(max-width:640px){
+  .controls input{width:130px}
+  thead th,tbody td{padding:8px 8px}
+  .col-opt{display:none}
+}
+@media(prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <h1>台股強勢股<span>掃描</span></h1>
+    <div class="meta" id="meta">載入中…</div>
+  </div>
+  <div class="tabs" role="tablist">
+    <button class="tab active" role="tab" data-tab="sepa">SEPA Trend Template<span class="count" id="cnt-sepa"></span></button>
+    <button class="tab" role="tab" data-tab="daily">當日強勢<span class="count" id="cnt-daily"></span></button>
+  </div>
+</header>
+
+<div class="controls">
+  <input id="q" type="search" placeholder="搜尋代號或名稱" aria-label="搜尋">
+  <select id="mkt" aria-label="市場別">
+    <option value="">全部市場</option>
+    <option value="上市">上市</option>
+    <option value="上櫃">上櫃</option>
+  </select>
+  <select id="rsmin" aria-label="RS 門檻">
+    <option value="0">RS 不限</option>
+    <option value="70">RS ≥ 70</option>
+    <option value="80">RS ≥ 80</option>
+    <option value="90" selected>RS ≥ 90</option>
+  </select>
+  <span class="hint">點欄位標題排序.點個股開 Yahoo 行情</span>
+</div>
+
+<main>
+  <table>
+    <thead><tr id="thead"></tr></thead>
+    <tbody id="tbody"></tbody>
+  </table>
+  <div class="empty" id="empty" hidden></div>
+</main>
+
+<footer>
+  SEPA:收盤 > 50MA > 150MA > 200MA(且 200MA 上升)、高於 52 週低點 30%+、距 52 週高點 25% 內、RS ≥ 70。
+  當日強勢:漲幅 ≥ 4%、量比 ≥ 1.5、成交值 ≥ 1 億。資料來源:證交所/櫃買中心 OpenAPI,盤後更新,僅供研究參考。
+</footer>
+
+<script>
+const COLS = [
+  {k:"code",  label:"代號",  num:false},
+  {k:"name",  label:"名稱",  num:false},
+  {k:"close", label:"收盤",  num:true},
+  {k:"chg_pct",label:"漲跌%", num:true},
+  {k:"value", label:"成交值(億)", num:true, opt:true},
+  {k:"vol_ratio",label:"量比", num:true},
+  {k:"off_high",label:"距52週高", num:true, opt:true},
+  {k:"rs",    label:"RS",   num:true},
+];
+
+let DATA = {sepa:[], daily:[]};
+let tab = "sepa";
+let sortKey = "rs", sortDir = -1;
+
+const $ = id => document.getElementById(id);
+const fmt = (v,k)=>{
+  if(v==null) return "—";
+  if(k==="chg_pct") return (v>0?"+":"")+v.toFixed(2)+"%";
+  if(k==="off_high") return v.toFixed(1)+"%";
+  if(k==="close") return v.toLocaleString("en",{minimumFractionDigits:v<100?2:1});
+  return v;
+};
+
+function renderHead(){
+  $("thead").innerHTML = COLS.map(c=>{
+    const arr = c.k===sortKey ? `<span class="arr">${sortDir<0?"▼":"▲"}</span>` : "";
+    return `<th data-k="${c.k}" class="${c.opt?"col-opt":""}">${c.label}${arr}</th>`;
+  }).join("");
+  $("thead").querySelectorAll("th").forEach(th=>{
+    th.onclick = ()=>{
+      const k = th.dataset.k;
+      if(sortKey===k) sortDir*=-1; else {sortKey=k; sortDir=-1;}
+      render();
+    };
+  });
+}
+
+function rows(){
+  const q = $("q").value.trim().toLowerCase();
+  const mkt = $("mkt").value;
+  const rsmin = tab==="sepa" ? +$("rsmin").value : 0;
+  let r = DATA[tab].filter(x=>
+    (!q || x.code.includes(q) || (x.name||"").toLowerCase().includes(q)) &&
+    (!mkt || x.market===mkt) &&
+    (x.rs==null ? rsmin===0 : x.rs>=rsmin)
+  );
+  r.sort((a,b)=>{
+    const A=a[sortKey], B=b[sortKey];
+    if(A==null) return 1; if(B==null) return -1;
+    return (A<B?-1:A>B?1:0)*(typeof A==="string"?-sortDir:sortDir)*(typeof A==="string"?-1:1);
+  });
+  return r;
+}
+
+function render(){
+  renderHead();
+  const r = rows();
+  $("empty").hidden = r.length>0;
+  if(!r.length) $("empty").textContent = "沒有符合條件的個股 — 調整篩選或等資料更新";
+  $("tbody").innerHTML = r.map(x=>{
+    const cls = x.chg_pct>0?"up":x.chg_pct<0?"down":"flat";
+    const suffix = x.market==="上櫃"?".TWO":".TW";
+    return `<tr data-url="https://tw.stock.yahoo.com/quote/${x.code}${suffix}">
+      <td>${x.code}</td>
+      <td class="name">${x.name||""}<span class="mk">${x.market||""}</span></td>
+      <td>${fmt(x.close,"close")}</td>
+      <td><span class="badge ${cls}">${fmt(x.chg_pct,"chg_pct")}</span></td>
+      <td class="col-opt">${fmt(x.value)}</td>
+      <td>${fmt(x.vol_ratio)}</td>
+      <td class="col-opt">${fmt(x.off_high,"off_high")}</td>
+      <td>${x.rs==null?"—":`<span class="rs-cell"><span class="rs-bar"><i style="width:${x.rs}%"></i></span><span class="rs-num">${x.rs}</span></span>`}</td>
+    </tr>`;
+  }).join("");
+  $("tbody").querySelectorAll("tr").forEach(tr=>{
+    tr.onclick = ()=>window.open(tr.dataset.url,"_blank");
+  });
+}
+
+document.querySelectorAll(".tab").forEach(b=>{
+  b.onclick = ()=>{
+    document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active"));
+    b.classList.add("active");
+    tab = b.dataset.tab;
+    $("rsmin").disabled = tab!=="sepa";
+    if(tab==="daily"){sortKey="chg_pct";} else {sortKey="rs";}
+    sortDir=-1;
+    render();
+  };
+});
+["q","mkt","rsmin"].forEach(id=>$(id).addEventListener("input",render));
+
+fetch("./data/latest.json")
+  .then(r=>{ if(!r.ok) throw new Error(r.status); return r.json(); })
+  .then(d=>{
+    DATA = d;
+    $("meta").textContent = `${d.trade_date} 收盤 · 全市場 ${d.universe} 檔 · 更新 ${d.updated}`;
+    $("cnt-sepa").textContent = d.sepa.length;
+    $("cnt-daily").textContent = d.daily.length;
+    render();
+  })
+  .catch(()=>{
+    $("meta").textContent = "";
+    $("empty").hidden = false;
+    $("empty").innerHTML = `尚無資料 — 請先執行 <code>python scripts/update_data.py --backfill</code> 產生 data/latest.json`;
+  });
+</script>
+</body>
+</html>
