@@ -46,7 +46,7 @@ def to_float(x):
 
 # ---------------------------------------------------------------- fetchers
 
-def _get_with_retry(url, *, retries=3, backoff=5, **kwargs):
+def _get_with_retry(url, *, retries=5, backoff=8, **kwargs):
     """對暫時性連線錯誤(逾時、連線中斷等)重試幾次再放棄。"""
     for attempt in range(1, retries + 1):
         try:
@@ -208,8 +208,12 @@ def backfill():
         day = d - timedelta(days=i)
         if day.weekday() >= 5 or day.isoformat() in have:
             continue
-        twse = fetch_twse_date(day)
-        tpex = fetch_tpex_date(day)
+        try:
+            twse = fetch_twse_date(day)
+            tpex = fetch_tpex_date(day)
+        except requests.exceptions.RequestException as e:
+            print(f"  {day} 抓取失敗({e.__class__.__name__}),略過此日。")
+            continue
         df = pd.concat([twse, tpex], ignore_index=True)
         if not df.empty:
             frames.append(df)
@@ -217,7 +221,10 @@ def backfill():
             print(f"  {day} ✓ {len(df)} 檔")
         if fetched >= KEEP_DAYS:
             break
-        time.sleep(0.5)  # 尊重伺服器,避免過於頻繁請求
+        if fetched % 20 == 0:
+            save_history(pd.concat(frames, ignore_index=True)
+                         .drop_duplicates(subset=["date", "code"], keep="last"))
+        time.sleep(1)  # 尊重伺服器,避免過於頻繁請求
     merged = pd.concat(frames, ignore_index=True)
     merged = merged.drop_duplicates(subset=["date", "code"], keep="last")
     save_history(merged)
