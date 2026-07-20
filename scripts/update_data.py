@@ -273,6 +273,16 @@ def compute(hist: pd.DataFrame) -> dict:
             rec["tt"] = None
         records.append(rec)
 
+    if not records:
+        # 歷史資料不足 60 天(例如尚未 backfill),無法計算 RS/SEPA
+        return {
+            "updated": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "trade_date": latest_date,
+            "universe": 0,
+            "sepa": [],
+            "daily": [],
+        }
+
     df = pd.DataFrame(records)
 
     # RS Rating:全市場 percentile 1–99
