@@ -61,58 +61,6 @@ def _get_with_retry(url, *, retries=5, backoff=8, **kwargs):
             time.sleep(backoff)
 
 
-def fetch_twse_today() -> pd.DataFrame:
-    """證交所 OpenAPI:上市個股當日收盤(免金鑰)。"""
-    url = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
-    r = _get_with_retry(url, timeout=30)
-    rows = []
-    for it in r.json():
-        code = it.get("Code", "").strip()
-        if not is_common_stock(code):
-            continue
-        close = to_float(it.get("ClosingPrice"))
-        if close is None:
-            continue
-        rows.append({
-            "code": code,
-            "name": it.get("Name", "").strip(),
-            "market": "上市",
-            "open": to_float(it.get("OpeningPrice")),
-            "high": to_float(it.get("HighestPrice")),
-            "low": to_float(it.get("LowestPrice")),
-            "close": close,
-            "volume": to_float(it.get("TradeVolume")) or 0,   # 股數
-            "value": to_float(it.get("TradeValue")) or 0,     # 成交金額
-        })
-    return pd.DataFrame(rows)
-
-
-def fetch_tpex_today() -> pd.DataFrame:
-    """櫃買中心 OpenAPI:上櫃個股當日收盤(免金鑰)。"""
-    url = "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes"
-    r = _get_with_retry(url, timeout=30)
-    rows = []
-    for it in r.json():
-        code = (it.get("SecuritiesCompanyCode") or "").strip()
-        if not is_common_stock(code):
-            continue
-        close = to_float(it.get("Close"))
-        if close is None:
-            continue
-        rows.append({
-            "code": code,
-            "name": (it.get("CompanyName") or "").strip(),
-            "market": "上櫃",
-            "open": to_float(it.get("Open")),
-            "high": to_float(it.get("High")),
-            "low": to_float(it.get("Low")),
-            "close": close,
-            "volume": to_float(it.get("TradingShares")) or 0,
-            "value": to_float(it.get("TransactionAmount")) or 0,
-        })
-    return pd.DataFrame(rows)
-
-
 def fetch_twse_date(d: date) -> pd.DataFrame:
     """證交所:歷史單日上市個股收盤(免金鑰,backfill 用)。"""
     url = "https://www.twse.com.tw/exchangeReport/MI_INDEX"
@@ -358,13 +306,13 @@ def compute(hist: pd.DataFrame) -> dict:
 # ---------------------------------------------------------------- main
 
 def daily_update():
-    twse = fetch_twse_today()
-    tpex = fetch_tpex_today()
+    today = date.today()
+    twse = fetch_twse_date(today)
+    tpex = fetch_tpex_date(today)
     today_df = pd.concat([twse, tpex], ignore_index=True)
     if today_df.empty:
         print("今日無資料(假日?),跳過。")
         return False
-    today_df["date"] = date.today().isoformat()
 
     hist = load_history()
     # 名稱/市場別以最新資料為準,回填舊資料
