@@ -50,11 +50,25 @@ def to_float(x):
 
 # ---------------------------------------------------------------- fetchers
 
+def _get_with_retry(url, *, retries=3, backoff=5, **kwargs):
+    """對暫時性連線錯誤(逾時、連線中斷等)重試幾次再放棄。"""
+    for attempt in range(1, retries + 1):
+        try:
+            r = requests.get(url, headers=HEADERS, **kwargs)
+            r.raise_for_status()
+            return r
+        except (requests.exceptions.RequestException,) as e:
+            if attempt == retries:
+                raise
+            print(f"  請求失敗({e.__class__.__name__}),{backoff}s 後重試 "
+                  f"({attempt}/{retries})…")
+            time.sleep(backoff)
+
+
 def fetch_twse_today() -> pd.DataFrame:
     """證交所 OpenAPI:上市個股當日收盤(免金鑰)。"""
     url = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
-    r = requests.get(url, headers=HEADERS, timeout=30)
-    r.raise_for_status()
+    r = _get_with_retry(url, timeout=30)
     rows = []
     for it in r.json():
         code = it.get("Code", "").strip()
@@ -80,8 +94,7 @@ def fetch_twse_today() -> pd.DataFrame:
 def fetch_tpex_today() -> pd.DataFrame:
     """櫃買中心 OpenAPI:上櫃個股當日收盤(免金鑰)。"""
     url = "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes"
-    r = requests.get(url, headers=HEADERS, timeout=30)
-    r.raise_for_status()
+    r = _get_with_retry(url, timeout=30)
     rows = []
     for it in r.json():
         code = (it.get("SecuritiesCompanyCode") or "").strip()
