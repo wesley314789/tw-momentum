@@ -6,20 +6,16 @@
 3. 計算 SEPA Trend Template 與當日強勢清單
 4. 輸出 docs/data/latest.json 給前端
 
-首次使用請先跑 backfill(需 FinMind 免費 token):
-    FINMIND_TOKEN=xxx python scripts/update_data.py --backfill
+首次使用請先跑 backfill(證交所/櫃買中心免費歷史 API,無需金鑰):
+    python scripts/update_data.py --backfill
 之後每日更新(GitHub Actions 自動執行):
     python scripts/update_data.py
 """
 
 import argparse
-import gzip
 import json
-import os
-import sys
 import time
 from datetime import date, datetime, timedelta
-from io import StringIO
 from pathlib import Path
 
 import pandas as pd
@@ -117,33 +113,69 @@ def fetch_tpex_today() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def fetch_finmind_date(d: date, token: str) -> pd.DataFrame:
-    """FinMind:單一日期全市場日 K(backfill 用)。"""
-    url = "https://api.finmindtrade.com/api/v4/data"
-    params = {
-        "dataset": "TaiwanStockPrice",
-        "start_date": d.isoformat(),
-        "end_date": d.isoformat(),
-        "token": token,
-    }
-    r = requests.get(url, params=params, timeout=60)
-    r.raise_for_status()
-    payload = r.json()
-    data = payload.get("data", [])
-    if not data:
+def fetch_twse_date(d: date) -> pd.DataFrame:
+    """證交所:歷史單日上市個股收盤(免金鑰,backfill 用)。"""
+    url = "https://www.twse.com.tw/exchangeReport/MI_INDEX"
+    params = {"response": "json", "date": d.strftime("%Y%m%d"),
+              "type": "ALLBUT0999"}
+    r = _get_with_retry(url, params=params, timeout=30)
+    table = next((t for t in r.json().get("tables", [])
+                  if "每日收盤行情" in t.get("title", "")), None)
+    if table is None:
         return pd.DataFrame()
-    df = pd.DataFrame(data)
-    df = df.rename(columns={
-        "stock_id": "code", "max": "high", "min": "low",
-        "Trading_Volume": "volume", "Trading_money": "value",
-    })
-    df = df[df["code"].map(is_common_stock)]
-    df["date"] = d.isoformat()
-    df["name"] = ""       # backfill 不含名稱,之後由每日資料補上
-    df["market"] = ""
-    cols = ["date", "code", "name", "market", "open", "high", "low",
-            "close", "volume", "value"]
-    return df[cols]
+    rows = []
+    for it in table["data"]:
+        code = it[0].strip()
+        if not is_common_stock(code):
+            continue
+        close = to_float(it[8])
+        if close is None:
+            continue
+        rows.append({
+            "date": d.isoformat(),
+            "code": code,
+            "name": it[1].strip(),
+            "market": "上市",
+            "open": to_float(it[5]),
+            "high": to_float(it[6]),
+            "low": to_float(it[7]),
+            "close": close,
+            "volume": to_float(it[2]) or 0,
+            "value": to_float(it[4]) or 0,
+        })
+    return pd.DataFrame(rows)
+
+
+def fetch_tpex_date(d: date) -> pd.DataFrame:
+    """櫃買中心:歷史單日上櫃個股收盤(免金鑰,backfill 用)。"""
+    url = "https://www.tpex.org.tw/www/zh-tw/afterTrading/dailyQuotes"
+    params = {"date": d.strftime("%Y/%m/%d")}
+    r = _get_with_retry(url, params=params, timeout=30)
+    table = next((t for t in r.json().get("tables", [])
+                  if "上櫃股票行情" in t.get("title", "")), None)
+    if table is None:
+        return pd.DataFrame()
+    rows = []
+    for it in table["data"]:
+        code = it[0].strip()
+        if not is_common_stock(code):
+            continue
+        close = to_float(it[2])
+        if close is None:
+            continue
+        rows.append({
+            "date": d.isoformat(),
+            "code": code,
+            "name": it[1].strip(),
+            "market": "上櫃",
+            "open": to_float(it[4]),
+            "high": to_float(it[5]),
+            "low": to_float(it[6]),
+            "close": close,
+            "volume": to_float(it[8]) or 0,
+            "value": to_float(it[9]) or 0,
+        })
+    return pd.DataFrame(rows)
 
 
 # ---------------------------------------------------------------- history
@@ -165,8 +197,8 @@ def save_history(df: pd.DataFrame):
     return df
 
 
-def backfill(token: str):
-    """回補約 280 個交易日的歷史資料(每個日期一次 API 呼叫)。"""
+def backfill():
+    """回補約 280 個交易日的歷史資料(證交所+櫃買中心,每個交易日 2 次 API 呼叫)。"""
     hist = load_history()
     have = set(hist["date"].unique())
     d = date.today()
@@ -176,19 +208,16 @@ def backfill(token: str):
         day = d - timedelta(days=i)
         if day.weekday() >= 5 or day.isoformat() in have:
             continue
-        try:
-            df = fetch_finmind_date(day, token)
-        except requests.HTTPError as e:
-            print(f"  {day} HTTP {e.response.status_code},等待 60s 重試…")
-            time.sleep(60)
-            df = fetch_finmind_date(day, token)
+        twse = fetch_twse_date(day)
+        tpex = fetch_tpex_date(day)
+        df = pd.concat([twse, tpex], ignore_index=True)
         if not df.empty:
             frames.append(df)
             fetched += 1
             print(f"  {day} ✓ {len(df)} 檔")
         if fetched >= KEEP_DAYS:
             break
-        time.sleep(1.2)  # 尊重免費版流量限制
+        time.sleep(0.5)  # 尊重伺服器,避免過於頻繁請求
     merged = pd.concat(frames, ignore_index=True)
     merged = merged.drop_duplicates(subset=["date", "code"], keep="last")
     save_history(merged)
@@ -351,14 +380,11 @@ def daily_update():
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--backfill", action="store_true",
-                    help="用 FinMind 回補歷史資料(需 FINMIND_TOKEN)")
+                    help="回補約 280 個交易日的歷史資料(證交所+櫃買中心,免金鑰)")
     args = ap.parse_args()
 
     if args.backfill:
-        token = os.environ.get("FINMIND_TOKEN", "")
-        if not token:
-            sys.exit("請設定環境變數 FINMIND_TOKEN(FinMind 免費註冊)")
-        backfill(token)
+        backfill()
         # 回補完直接算一次
         result = compute(load_history())
         OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
