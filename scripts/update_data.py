@@ -23,6 +23,7 @@ import requests
 
 ROOT = Path(__file__).resolve().parent.parent
 HISTORY_PATH = ROOT / "data" / "history.csv.gz"
+INDEX_PATH = ROOT / "data" / "index.csv.gz"
 OUTPUT_PATH = ROOT / "docs" / "data" / "latest.json"
 KEEP_DAYS = 280  # 滾動保留的交易日數(> 252 即可算 52 週)
 
@@ -61,37 +62,47 @@ def _get_with_retry(url, *, retries=5, backoff=8, **kwargs):
             time.sleep(backoff)
 
 
-def fetch_twse_date(d: date) -> pd.DataFrame:
-    """證交所:歷史單日上市個股收盤(免金鑰,backfill 用)。"""
+def fetch_twse_date(d: date) -> tuple[pd.DataFrame, float | None]:
+    """證交所:歷史單日上市個股收盤 + 加權股價指數(免金鑰,backfill/daily 用)。"""
     url = "https://www.twse.com.tw/exchangeReport/MI_INDEX"
     params = {"response": "json", "date": d.strftime("%Y%m%d"),
               "type": "ALLBUT0999"}
     r = _get_with_retry(url, params=params, timeout=30)
-    table = next((t for t in r.json().get("tables", [])
-                  if "每日收盤行情" in t.get("title", "")), None)
-    if table is None:
-        return pd.DataFrame()
+    tables = r.json().get("tables", [])
+
+    table = next((t for t in tables if "每日收盤行情" in t.get("title", "")), None)
     rows = []
-    for it in table["data"]:
-        code = it[0].strip()
-        if not is_common_stock(code):
-            continue
-        close = to_float(it[8])
-        if close is None:
-            continue
-        rows.append({
-            "date": d.isoformat(),
-            "code": code,
-            "name": it[1].strip(),
-            "market": "上市",
-            "open": to_float(it[5]),
-            "high": to_float(it[6]),
-            "low": to_float(it[7]),
-            "close": close,
-            "volume": to_float(it[2]) or 0,
-            "value": to_float(it[4]) or 0,
-        })
-    return pd.DataFrame(rows)
+    if table is not None:
+        for it in table["data"]:
+            code = it[0].strip()
+            if not is_common_stock(code):
+                continue
+            close = to_float(it[8])
+            if close is None:
+                continue
+            rows.append({
+                "date": d.isoformat(),
+                "code": code,
+                "name": it[1].strip(),
+                "market": "上市",
+                "open": to_float(it[5]),
+                "high": to_float(it[6]),
+                "low": to_float(it[7]),
+                "close": close,
+                "volume": to_float(it[2]) or 0,
+                "value": to_float(it[4]) or 0,
+            })
+
+    idx_table = next((t for t in tables
+                       if "價格指數(臺灣證券交易所)" in t.get("title", "")), None)
+    index_close = None
+    if idx_table is not None:
+        idx_row = next((r for r in idx_table["data"]
+                         if "發行量加權股價指數" in r[0]), None)
+        if idx_row is not None:
+            index_close = to_float(idx_row[1])
+
+    return pd.DataFrame(rows), index_close
 
 
 def fetch_tpex_date(d: date) -> pd.DataFrame:
@@ -145,10 +156,28 @@ def save_history(df: pd.DataFrame):
     return df
 
 
+def load_index_history() -> pd.DataFrame:
+    """大盤(加權股價指數)歷史收盤,用來算個股相對大盤的超額報酬。"""
+    if INDEX_PATH.exists():
+        return pd.read_csv(INDEX_PATH)
+    return pd.DataFrame(columns=["date", "close"])
+
+
+def save_index_history(df: pd.DataFrame):
+    INDEX_PATH.parent.mkdir(parents=True, exist_ok=True)
+    df = df.drop_duplicates(subset=["date"], keep="last")
+    keep = sorted(df["date"].unique())[-KEEP_DAYS:]
+    df = df[df["date"].isin(keep)].sort_values("date")
+    df.to_csv(INDEX_PATH, index=False, float_format="%.4g")
+    return df
+
+
 def backfill():
     """回補約 280 個交易日的歷史資料(證交所+櫃買中心,每個交易日 2 次 API 呼叫)。"""
     hist = load_history()
     have = set(hist["date"].unique())
+    idx_hist = load_index_history()
+    idx_rows = idx_hist.to_dict("records")
     d = date.today()
     fetched, frames = 0, [hist]
     # 往回掃 420 個日曆日,足夠涵蓋 280 個交易日
@@ -157,7 +186,7 @@ def backfill():
         if day.weekday() >= 5 or day.isoformat() in have:
             continue
         try:
-            twse = fetch_twse_date(day)
+            twse, index_close = fetch_twse_date(day)
             tpex = fetch_tpex_date(day)
         except requests.exceptions.RequestException as e:
             print(f"  {day} 抓取失敗({e.__class__.__name__}),略過此日。")
@@ -167,43 +196,64 @@ def backfill():
             frames.append(df)
             fetched += 1
             print(f"  {day} ✓ {len(df)} 檔")
+        if index_close is not None:
+            idx_rows.append({"date": day.isoformat(), "close": index_close})
         if fetched >= KEEP_DAYS:
             break
         if fetched % 20 == 0:
             save_history(pd.concat(frames, ignore_index=True)
                          .drop_duplicates(subset=["date", "code"], keep="last"))
+            save_index_history(pd.DataFrame(idx_rows))
         time.sleep(1)  # 尊重伺服器,避免過於頻繁請求
     merged = pd.concat(frames, ignore_index=True)
     merged = merged.drop_duplicates(subset=["date", "code"], keep="last")
     save_history(merged)
+    save_index_history(pd.DataFrame(idx_rows))
     print(f"backfill 完成:{fetched} 個交易日")
 
 
 # ---------------------------------------------------------------- compute
 
-def rs_score(g: pd.DataFrame) -> float | None:
-    """IBD 式加權動能:40% 三個月 + 各 20% 六/九/十二個月報酬。"""
-    c = g["close"].to_numpy()
+def period_returns(c) -> dict:
+    """3/6/9/12 個月(63/126/189/252 個交易日)報酬率。"""
     n = len(c)
-    if n < 130:
-        return None
 
     def ret(days):
         return c[-1] / c[-days] - 1 if n >= days else None
 
-    r3, r6, r9, r12 = ret(63), ret(126), ret(189), ret(252)
+    return {3: ret(63), 6: ret(126), 9: ret(189), 12: ret(252)}
+
+
+def rs_score(g: pd.DataFrame, idx_rets: dict) -> float | None:
+    """IBD 式加權動能,但用相對大盤(加權指數)的超額報酬取代絕對報酬:
+    40% 三個月 + 各 20% 六/九/十二個月超額報酬。"""
+    c = g["close"].to_numpy()
+    if len(c) < 130:
+        return None
+
+    rets = period_returns(c)
     parts, weights = [], []
-    for r, w in [(r3, 0.4), (r6, 0.2), (r9, 0.2), (r12, 0.2)]:
-        if r is not None:
-            parts.append(r * w)
-            weights.append(w)
+    for months, w in [(3, 0.4), (6, 0.2), (9, 0.2), (12, 0.2)]:
+        r = rets[months]
+        if r is None:
+            continue
+        idx_r = idx_rets.get(months)
+        excess = r - idx_r if idx_r is not None else r
+        parts.append(excess * w)
+        weights.append(w)
     return sum(parts) / sum(weights) if weights else None
 
 
-def compute(hist: pd.DataFrame) -> dict:
+def compute(hist: pd.DataFrame, idx_hist: pd.DataFrame | None = None) -> dict:
     hist = hist.sort_values(["code", "date"])
     latest_date = hist["date"].max()
     today = hist[hist["date"] == latest_date].set_index("code")
+
+    if idx_hist is None:
+        idx_hist = load_index_history()
+    idx_hist = idx_hist.sort_values("date")
+    idx_rets = (period_returns(idx_hist["close"].to_numpy())
+                if len(idx_hist) else {3: None, 6: None, 9: None, 12: None})
 
     records = []
     for code, g in hist.groupby("code"):
@@ -238,7 +288,7 @@ def compute(hist: pd.DataFrame) -> dict:
             "vol_ratio": round(vol_ratio, 2) if vol_ratio else None,
             "off_high": round((close / hi52 - 1) * 100, 1),
             "above_low": round((close / lo52 - 1) * 100, 1),
-            "rs_raw": rs_score(g),
+            "rs_raw": rs_score(g, idx_rets),
             "n_days": n,
         }
 
@@ -307,7 +357,7 @@ def compute(hist: pd.DataFrame) -> dict:
 
 def daily_update():
     today = date.today()
-    twse = fetch_twse_date(today)
+    twse, index_close = fetch_twse_date(today)
     tpex = fetch_tpex_date(today)
     today_df = pd.concat([twse, tpex], ignore_index=True)
     if today_df.empty:
@@ -322,6 +372,14 @@ def daily_update():
     merged["name"] = merged["code"].map(name_map["name"]).fillna(merged["name"])
     merged["market"] = merged["code"].map(name_map["market"]).fillna(merged["market"])
     merged = save_history(merged)
+
+    if index_close is not None:
+        idx_hist = load_index_history()
+        idx_hist = idx_hist[idx_hist["date"] != today.isoformat()]
+        idx_hist = pd.concat([idx_hist, pd.DataFrame(
+            [{"date": today.isoformat(), "close": index_close}])],
+            ignore_index=True)
+        save_index_history(idx_hist)
 
     result = compute(merged)
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
