@@ -1,0 +1,31 @@
+name: backfill
+
+on:
+  workflow_dispatch: {}   # 手動觸發:回補/重建約 280 個交易日的歷史資料
+
+permissions:
+  contents: write
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install pandas requests
+
+      - name: Run backfill
+        run: python scripts/update_data.py --backfill
+
+      - name: Commit results
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/history.csv.gz docs/data/latest.json
+          git diff --cached --quiet || git commit -m "data: backfill $(date +%F)"
+          git push
