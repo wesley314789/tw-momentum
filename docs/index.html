@@ -82,6 +82,25 @@ footer{max-width:1080px;margin:0 auto 40px;padding:0 24px;
   font-size:12px;color:var(--muted);border-top:1px solid var(--line);
   padding-top:16px}
 
+.gex-card{max-width:1080px;margin:20px auto 0;padding:16px 24px}
+.gex-box{background:var(--surface);border:1px solid var(--line);
+  border-radius:10px;padding:16px 20px}
+.gex-head{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;
+  margin-bottom:14px}
+.gex-head h2{font-size:14px;font-weight:700;letter-spacing:.04em}
+.gex-f{font-family:var(--mono);font-size:13px;color:var(--muted)}
+.gex-f b{color:var(--text);font-size:15px}
+.gex-regime{margin-left:auto;font-family:var(--mono);font-size:12px;
+  padding:2px 10px;border-radius:20px;font-weight:600;letter-spacing:.03em}
+.gex-regime.positive{background:var(--down-dim);color:var(--down)}
+.gex-regime.negative{background:var(--up-dim);color:var(--up)}
+.gex-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));
+  gap:10px}
+.gex-tile{background:var(--surface-2);border-radius:8px;padding:10px 12px}
+.gex-tile .lbl{font-size:11px;color:var(--muted);margin-bottom:4px}
+.gex-tile .val{font-family:var(--mono);font-size:16px;font-weight:600}
+.gex-meta{margin-top:12px;font-size:11px;color:var(--muted)}
+
 @media(max-width:640px){
   .controls input{width:130px}
   thead th,tbody td{padding:8px 8px}
@@ -102,6 +121,18 @@ footer{max-width:1080px;margin:0 auto 40px;padding:0 24px;
     <button class="tab" role="tab" data-tab="daily">當日強勢<span class="count" id="cnt-daily"></span></button>
   </div>
 </header>
+
+<section class="gex-card" id="gex-card" hidden>
+  <div class="gex-box">
+    <div class="gex-head">
+      <h2>台指期 GEX 位階</h2>
+      <span class="gex-f">F <b id="gex-F"></b></span>
+      <span class="gex-regime" id="gex-regime-badge"></span>
+    </div>
+    <div class="gex-grid" id="gex-grid"></div>
+    <div class="gex-meta" id="gex-meta"></div>
+  </div>
+</section>
 
 <div class="controls">
   <input id="q" type="search" placeholder="搜尋代號或名稱" aria-label="搜尋">
@@ -239,6 +270,31 @@ fetch("./data/latest.json")
     $("empty").hidden = false;
     $("empty").innerHTML = `尚無資料 — 請先執行 <code>python scripts/update_data.py --backfill</code> 產生 data/latest.json`;
   });
+
+const GEX_TILES = [
+  {k:"call_wall",  label:"Call Wall"},
+  {k:"put_wall",   label:"Put Wall"},
+  {k:"peak",       label:"山頂 Peak"},
+  {k:"valley",     label:"山谷 Valley"},
+  {k:"micro_flip", label:"Micro Flip"},
+  {k:"macro_zero", label:"Macro Zero"},
+];
+const fmtPts = v => v==null ? "—" : Math.round(v).toLocaleString("en");
+
+fetch("./data/gex_latest.json")
+  .then(r=>{ if(!r.ok) throw new Error(r.status); return r.json(); })
+  .then(d=>{
+    $("gex-F").textContent = fmtPts(d.F);
+    const badge = $("gex-regime-badge");
+    badge.textContent = d.regime==="positive" ? "正 Gamma(壓抑)" : "負 Gamma(放大)";
+    badge.className = "gex-regime " + (d.regime==="positive" ? "positive" : "negative");
+    $("gex-grid").innerHTML = GEX_TILES.map(t=>
+      `<div class="gex-tile"><div class="lbl">${t.label}</div><div class="val">${fmtPts(d[t.k])}</div></div>`
+    ).join("");
+    $("gex-meta").textContent = `${d.date}(${d.dow})收盤結算 · 更新 ${d.updated} · 座標為台指期遠期價,非加權指數`;
+    $("gex-card").hidden = false;
+  })
+  .catch(()=>{ $("gex-card").hidden = true; });
 </script>
 </body>
 </html>
