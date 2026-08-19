@@ -53,6 +53,9 @@ VALLEY_BIN = 100         # 履約價分箱寬度。近月有 50 點檔且量能�
                          # 不分箱的話每根 50 點檔都會被誤判成谷
 VALLEY_MIN_DEPTH = 0.15  # 谷的深度(prominence)至少要達區間內最大 gross gamma 的比例
 
+# regime 中性帶: 淨 gamma 佔總 gamma 低於此比例就標 neutral, 不硬判正負
+NEUTRAL_RATIO = 0.05
+
 # 反推 IV 失敗時的處理: 'drop' 丟棄 / 'atm' 用該到期日 ATM IV 填補
 IV_FALLBACK = "atm"
 
@@ -213,6 +216,10 @@ def implied_forward(calls: pd.DataFrame, puts: pd.DataFrame, T: float) -> float 
     """
     merged = calls.merge(puts, on="K", suffixes=("_c", "_p"))
     merged = merged[(merged["oi_c"] > 0) & (merged["oi_p"] > 0)]
+    # 兩腳都要有實際報價。期交所對最後交易日的到期序列不發結算價(整批寫 0),
+    # 不擋掉的話 C-P 會全等於 0, |C-P| 最小變成隨便挑一檔, 反推出來的 F 是垃圾,
+    # 再往下污染整條鏈的 IV。
+    merged = merged[(merged["px_c"] >= MIN_PRICE) & (merged["px_p"] >= MIN_PRICE)]
     if len(merged) < 3:
         return None
     merged["diff"] = (merged["px_c"] - merged["px_p"]).abs()
@@ -232,7 +239,10 @@ def build_chain(day_df: pd.DataFrame, trade_date: dt.date) -> list[dict]:
         # datetime.date,型別不一致會讓相減直接炸掉,統一轉成 Timestamp 再算。
         T = (pd.Timestamp(exp_code) - pd.Timestamp(trade_date)).days / 365.0
         if T <= 0:
-            continue        # 當日到期: gamma 發散, 直接排除
+            # 當日到期直接排除。結算日那批部位看起來很大(2026-08-19 佔全場 OI
+            # 的 75%), 但期交所對最後交易日的到期序列不發結算價(整批 0), 反推
+            # 不出 IV; 而且收盤後它就不再交易, 那份 gamma 不會再產生盤中避險。
+            continue
 
         cp = grp[COL["cp"]].astype(str).str.strip()
         c = grp[cp == "買權"]
@@ -322,6 +332,13 @@ def gex_by_strike(F: float, chain: list[dict]) -> pd.DataFrame:
              .groupby("K", as_index=False).sum()
 
 
+def regime_label(gex_now: float, net_ratio: float) -> str:
+    """淨 gamma 太小(多空幾乎抵銷)時標 neutral, 不硬給正負。"""
+    if not np.isfinite(net_ratio) or net_ratio < NEUTRAL_RATIO:
+        return "neutral"
+    return "positive" if gex_now > 0 else "negative"
+
+
 def find_valley(by_k: pd.DataFrame, F: float) -> float:
     """
     山谷: 現價下方兩個量能區之間的凹陷 —— 跌破後沒有 gamma 承接、容易加速的真空帶。
@@ -370,7 +387,14 @@ def compute_levels(chain: list[dict], F: float) -> dict:
     arrays = chain_arrays(chain)
     curve = gex_curve(grid, arrays)
     lv["gex_now"] = float(gex_curve([F], arrays)[0])
-    lv["regime"] = "positive" if lv["gex_now"] > 0 else "negative"
+
+    # net_ratio: 淨 gamma 佔總 gamma 的比例, 用來判斷 regime 標籤可不可信。
+    # 貼近翻轉點時多空 gamma 幾乎抵銷完, 這個值趨近 0, 此時正負號會被夜盤/日盤
+    # 取價這種小差異翻掉(2026-08-19 就是這樣, 我們標正、對照組標負)。
+    # 這裡只存原始比值不套門檻, 門檻留給呼叫端調, 免得改一次就要重算整段歷史。
+    gross_total = float(by_k["gross"].sum())
+    lv["net_ratio"] = abs(lv["gex_now"]) / gross_total if gross_total else np.nan
+    lv["regime"] = regime_label(lv["gex_now"], lv["net_ratio"])
 
     def zero_cross(c):
         """取最接近現價的零軸穿越, 線性內插。"""
@@ -442,7 +466,7 @@ def prepare(raw: pd.DataFrame) -> pd.DataFrame:
 
 
 HIST_COLS = ["date", "dow", "is_settle", "F", "call_wall", "put_wall", "peak",
-             "valley", "micro_flip", "macro_zero", "gex_now", "regime"]
+             "valley", "micro_flip", "macro_zero", "gex_now", "net_ratio", "regime"]
 
 
 def load_history() -> pd.DataFrame:
