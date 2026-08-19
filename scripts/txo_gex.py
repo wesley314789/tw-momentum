@@ -28,6 +28,7 @@ import numpy as np
 import pandas as pd
 import requests
 from scipy.optimize import brentq
+from scipy.signal import find_peaks
 from scipy.stats import norm
 
 # ---------------------------------------------------------------- 設定
@@ -46,6 +47,11 @@ GRID_STEP = 5            # 台指用 5 點一格
 # 品質過濾 —— 這兩個值會顯著影響結果, 建議自己做敏感度測試
 MIN_OI = 30              # OI 低於此值的序列丟棄
 MIN_PRICE = 0.5          # 結算價低於此值 IV 反推不可靠
+
+# 山谷偵測
+VALLEY_BIN = 100         # 履約價分箱寬度。近月有 50 點檔且量能遠小於百點檔,
+                         # 不分箱的話每根 50 點檔都會被誤判成谷
+VALLEY_MIN_DEPTH = 0.15  # 谷的深度(prominence)至少要達區間內最大 gross gamma 的比例
 
 # 反推 IV 失敗時的處理: 'drop' 丟棄 / 'atm' 用該到期日 ATM IV 填補
 IV_FALLBACK = "atm"
@@ -316,6 +322,34 @@ def gex_by_strike(F: float, chain: list[dict]) -> pd.DataFrame:
              .groupby("K", as_index=False).sum()
 
 
+def find_valley(by_k: pd.DataFrame, F: float) -> float:
+    """
+    山谷: 現價下方兩個量能區之間的凹陷 —— 跌破後沒有 gamma 承接、容易加速的真空帶。
+
+    不能直接取區間最小值: gross gamma 隨著遠離價平單調衰減, 全域最小幾乎永遠
+    落在掃描窗最外緣那根沒人交易的空履約價上, 沒有結構意義(實測 280 天有一半
+    貼在 -6% 以外)。這裡改成先分箱抹掉 50 點檔的鋸齒, 再找有足夠深度的局部
+    低點, 取最接近現價的那個。找不到夠深的谷就回 NaN, 不硬給數字。
+    """
+    lo = F * (1 - GRID_PCT)
+    sub = by_k[(by_k["K"] < F) & (by_k["K"] > lo)]
+    if len(sub) < 3:
+        return np.nan
+
+    binned = (sub.assign(_bin=(sub["K"] // VALLEY_BIN) * VALLEY_BIN)
+                 .groupby("_bin", as_index=False)["gross"].sum()
+                 .sort_values("_bin"))
+    if len(binned) < 3:
+        return np.nan
+
+    x = binned["_bin"].to_numpy()
+    y = binned["gross"].to_numpy()
+    troughs, _ = find_peaks(-y, prominence=y.max() * VALLEY_MIN_DEPTH)
+    if not len(troughs):
+        return np.nan
+    return float(x[troughs].max())    # 下方離現價最近的谷 = 履約價最大的那個
+
+
 def compute_levels(chain: list[dict], F: float) -> dict:
     if not chain:
         return {}
@@ -329,9 +363,7 @@ def compute_levels(chain: list[dict], F: float) -> dict:
     lv["put_wall"]  = float(below.loc[below["net"].idxmin(), "K"]) if len(below) else np.nan
     lv["peak"]      = float(by_k.loc[by_k["gross"].idxmax(), "K"])
 
-    # 山谷: 現價下方 gross gamma 的局部最小 (牆與牆之間的空檔)
-    near_below = below[below["K"] > F * (1 - GRID_PCT)]
-    lv["valley"] = float(near_below.loc[near_below["gross"].idxmin(), "K"]) if len(near_below) else np.nan
+    lv["valley"] = find_valley(by_k, F)
 
     # Flip: 掃網格找總 GEX 零軸穿越
     grid = np.arange(F * (1 - GRID_PCT), F * (1 + GRID_PCT), GRID_STEP)
@@ -503,8 +535,12 @@ def daily_update():
 
     latest = merged.sort_values("date").iloc[-1].to_dict()
     latest["updated"] = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
+    # 位階可能是 NaN(當天找不到夠深的谷、或沒有零軸穿越)。json.dumps 預設會寫出
+    # 裸的 NaN, 那不是合法 JSON, 前端 JSON.parse 會直接爆掉、卡片靜默消失。
+    latest = {k: (None if pd.isna(v) else v) for k, v in latest.items()}
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    OUTPUT_PATH.write_text(json.dumps(latest, ensure_ascii=False), encoding="utf-8")
+    OUTPUT_PATH.write_text(json.dumps(latest, ensure_ascii=False, allow_nan=False),
+                           encoding="utf-8")
     print(f"完成: {latest['date']} | F={latest['F']} | regime={latest['regime']}")
     return True
 
