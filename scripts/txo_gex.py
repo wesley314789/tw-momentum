@@ -38,6 +38,7 @@ HISTORY_PATH = ROOT / "data" / "gex_history.csv"
 OUTPUT_PATH = ROOT / "docs" / "data" / "gex_latest.json"
 KEEP_DAYS = 280           # 與股票那邊的滾動視窗一致
 
+TPE = dt.timezone(dt.timedelta(hours=8))
 TAIFEX_OPT_URL = "https://www.taifex.com.tw/cht/3/optDataDown"
 TAIFEX_FUT_URL = "https://www.taifex.com.tw/cht/3/futDataDown"
 TXF_COLS = ["date", "txf_settle", "txf_close", "txf_oi", "txf_night"]
@@ -83,6 +84,12 @@ COL = {
 
 # ---------------------------------------------------------------- 下載
 
+def taipei_today() -> dt.date:
+    """台北當日。runner 跑在 UTC, 排在台北早上時 UTC 日期會落後一天, 用當地
+    日期推算交易日才不會受排程時間影響。"""
+    return dt.datetime.now(TPE).date()
+
+
 def _post_csv(url: str, commodity: str, start: dt.date, end: dt.date,
               *, index_col=None, retries: int = 3) -> pd.DataFrame:
     """對期交所下載端點發 POST 並解析 CSV。"""
@@ -96,8 +103,6 @@ def _post_csv(url: str, commodity: str, start: dt.date, end: dt.date,
         try:
             r = requests.post(url, data=payload, headers=HEADERS, timeout=60)
             r.raise_for_status()
-            if len(r.content) < 200:
-                raise ValueError("回應過短, 可能是空區間或被擋")
             # 期交所常見 big5/ms950, 偶爾 utf-8-sig
             for enc in ("ms950", "big5hkscs", "utf-8-sig"):
                 try:
@@ -112,6 +117,11 @@ def _post_csv(url: str, commodity: str, start: dt.date, end: dt.date,
             df = pd.read_csv(io.StringIO(text), index_col=index_col,
                              low_memory=False)
             df.columns = [str(c).strip() for c in df.columns]
+            # 用「有沒有預期欄位」判斷是不是真的被擋, 不能用回應長度 —— 查到
+            # 非交易日時期交所會回一份只有表頭的合法 CSV(約 197 bytes), 用長度
+            # 門檻會把這種正常的空結果誤判成失敗並重試三次後拋例外。
+            if "交易日期" not in df.columns:
+                raise ValueError(f"回應不含預期欄位, 可能被擋: {list(df.columns)[:4]}")
             return df
         except Exception as e:
             if attempt == retries - 1:
@@ -624,7 +634,7 @@ def backfill(start: dt.date, end: dt.date):
 
 def daily_update():
     """抓最近 7 個日曆日(含今天)並補上尚未計算過的交易日,順便寫出最新一天給前端。"""
-    end = dt.date.today()
+    end = taipei_today()
     start = end - dt.timedelta(days=7)
     raw = fetch_range(start, end)
     df = prepare(raw)
@@ -681,7 +691,7 @@ def main():
         return
 
     if args.backfill:
-        end = dt.date.fromisoformat(args.end) if args.end else dt.date.today()
+        end = dt.date.fromisoformat(args.end) if args.end else taipei_today()
         start = (dt.date.fromisoformat(args.start) if args.start
                  else end - dt.timedelta(days=420))
         backfill(start, end)

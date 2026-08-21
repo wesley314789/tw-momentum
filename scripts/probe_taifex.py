@@ -119,12 +119,22 @@ def probe_futures(day) -> tuple[str, str]:
 def main():
     now = datetime.now(TPE)
     day = now.date()
-    print(f"[probe] 台北時間 {now:%Y-%m-%d %H:%M} | 查詢交易日 {day}")
+    prev = day - timedelta(days=1)
+    while prev.weekday() >= 5:          # 跳過週末, 找上一個可能的交易日
+        prev -= timedelta(days=1)
+
+    print(f"[probe] 台北時間 {now:%Y-%m-%d %H:%M (%a)}")
+    print(f"— 當日 {day} —")
     print(f"  TXO 選擇權 OI : {probe_options(day)}")
     d, n = probe_futures(day)
     print(f"  TX  期貨日盤   : {d}")
     print(f"  TX  期貨夜盤   : {n}")
-    print("  (期交所交易日定義: 夜盤在前(前日15:00~當日05:00), 日盤在後(08:45~13:45))")
+    print(f"— 前一交易日 {prev} —")
+    print(f"  TXO 選擇權 OI : {probe_options(prev)}")
+    pd_, pn = probe_futures(prev)
+    print(f"  TX  期貨日盤   : {pd_}")
+    print("  (交易日定義: 夜盤在前(前日15:00~當日05:00), 日盤在後(08:45~13:45)。")
+    print("   早上七點那班要回答的是: 當日夜盤(05:00 剛收)的收盤價拿不拿得到)")
 
 
 if __name__ == "__main__":
