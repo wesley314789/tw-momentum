@@ -54,7 +54,9 @@ RS Rating 採 IBD 式加權:40% 三個月 + 各 20% 六/九/十二個月的**超
 
 **當日強勢:** 漲幅 ≥ 4%、量比(當日量/20 日均量)≥ 1.5、成交值 ≥ 1 億。
 
-門檻都在 `scripts/update_data.py` 的 `compute()` 裡,可自行調整。
+兩份清單都要求成交值 ≥ 1 億。少了這道濾網,SEPA 會有三成是一天只成交幾十萬元的個股 —— 技術面條件再漂亮也建不了倉。
+
+門檻都是 `scripts/update_data.py` 頂端的具名常數(`MIN_VALUE`、`MIN_RS`、`DAILY_CHG`、`DAILY_VOL_RATIO`),可自行調整。
 
 ## GEX 位階
 

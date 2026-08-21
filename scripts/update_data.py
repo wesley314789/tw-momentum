@@ -27,6 +27,13 @@ INDEX_PATH = ROOT / "data" / "index.csv.gz"
 OUTPUT_PATH = ROOT / "docs" / "data" / "latest.json"
 KEEP_DAYS = 280  # 滾動保留的交易日數(> 252 即可算 52 週)
 
+# 篩選門檻
+MIN_VALUE = 1.0    # 成交值下限(億)。兩份清單共用 —— 沒有這道濾網, SEPA 會塞滿
+                   # 一天只成交幾十萬元的個股(實測佔三成), 條件再漂亮也進不去
+MIN_RS = 70        # SEPA 的 RS 下限
+DAILY_CHG = 4.0    # 當日強勢: 漲幅下限(%)
+DAILY_VOL_RATIO = 1.5   # 當日強勢: 量比下限
+
 HEADERS = {"User-Agent": "Mozilla/5.0 (tw-momentum-scanner)"}
 
 
@@ -151,8 +158,10 @@ def save_history(df: pd.DataFrame):
     # 只保留最近 KEEP_DAYS 個交易日
     keep = sorted(df["date"].unique())[-KEEP_DAYS:]
     df = df[df["date"].isin(keep)]
+    # %.4g 只留四位有效數字, 四位數以上的股價會被截掉尾數(13925 -> 13920),
+    # 之後讀回來算均線/報酬都帶著這個誤差。改成 %.6g, 檔案大小影響很小。
     df.to_csv(HISTORY_PATH, index=False, compression="gzip",
-              float_format="%.4g")
+              float_format="%.6g")
     return df
 
 
@@ -325,17 +334,19 @@ def compute(hist: pd.DataFrame, idx_hist: pd.DataFrame | None = None) -> dict:
                            ).round().astype(int)
     df["rs"] = df["rs"].where(df["rs"].notna(), None)
 
-    # SEPA 清單:7 條件全過 + RS >= 70
+    # SEPA 清單:7 條件全過 + RS 門檻 + 成交值門檻
     def sepa_pass(r):
         return (r["tt"] is not None and all(r["tt"])
-                and r["rs"] is not None and r["rs"] >= 70)
+                and r["rs"] is not None and r["rs"] >= MIN_RS
+                and r["value"] >= MIN_VALUE)
 
     sepa = df[df.apply(sepa_pass, axis=1)].copy()
     sepa = sepa.sort_values("rs", ascending=False)
 
-    # 當日強勢:漲幅 >= 4%、量比 >= 1.5、成交值 >= 1 億
-    daily = df[(df["chg_pct"] >= 4) & (df["vol_ratio"] >= 1.5)
-               & (df["value"] >= 1)].copy()
+    # 當日強勢:漲幅、量比、成交值三道門檻
+    daily = df[(df["chg_pct"] >= DAILY_CHG)
+               & (df["vol_ratio"] >= DAILY_VOL_RATIO)
+               & (df["value"] >= MIN_VALUE)].copy()
     daily = daily.sort_values(["chg_pct", "vol_ratio"], ascending=False)
 
     def pack(sub: pd.DataFrame):
