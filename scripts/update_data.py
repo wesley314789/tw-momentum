@@ -332,13 +332,14 @@ def compute(hist: pd.DataFrame, idx_hist: pd.DataFrame | None = None) -> dict:
     valid = df["rs_raw"].notna()
     df.loc[valid, "rs"] = (df.loc[valid, "rs_raw"].rank(pct=True) * 98 + 1
                            ).round().astype(int)
-    df["rs"] = df["rs"].where(df["rs"].notna(), None)
+    # 歷史不足 130 天的個股算不出 RS, 這裡會留 NaN(不是 None ——
+    # float 欄位塞 None 會被轉回 NaN), 交給 pack() 統一處理。
 
     # SEPA 清單:7 條件全過 + RS 門檻 + 成交值門檻
     def sepa_pass(r):
         return (r["tt"] is not None and all(r["tt"])
-                and r["rs"] is not None and r["rs"] >= MIN_RS
-                and r["value"] >= MIN_VALUE)
+                and pd.notna(r["rs"]) and r["rs"] >= MIN_RS
+                and pd.notna(r["value"]) and r["value"] >= MIN_VALUE)
 
     sepa = df[df.apply(sepa_pass, axis=1)].copy()
     sepa = sepa.sort_values("rs", ascending=False)
@@ -352,8 +353,11 @@ def compute(hist: pd.DataFrame, idx_hist: pd.DataFrame | None = None) -> dict:
     def pack(sub: pd.DataFrame):
         cols = ["code", "name", "market", "close", "chg_pct", "value",
                 "vol_ratio", "off_high", "above_low", "rs"]
-        out = sub[cols].where(sub[cols].notna(), None)
-        return out.to_dict(orient="records")
+        # 必須逐格轉 None: DataFrame.where(..., None) 在 float 欄位上是空操作
+        # (None 會被存回 NaN), NaN 再被 json.dumps 寫成裸的 NaN —— 那不是合法
+        # JSON, 瀏覽器 JSON.parse 會直接拋錯, 整張表變成「尚無資料」。
+        return [{k: (None if pd.isna(v) else v) for k, v in rec.items()}
+                for rec in sub[cols].to_dict(orient="records")]
 
     return {
         "updated": datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -394,7 +398,7 @@ def daily_update():
 
     result = compute(merged)
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    OUTPUT_PATH.write_text(json.dumps(result, ensure_ascii=False),
+    OUTPUT_PATH.write_text(json.dumps(result, ensure_ascii=False, allow_nan=False),
                            encoding="utf-8")
     print(f"完成:{result['trade_date']} | 全市場 {result['universe']} 檔 | "
           f"SEPA {len(result['sepa'])} 檔 | 當日強勢 {len(result['daily'])} 檔")
@@ -412,7 +416,7 @@ if __name__ == "__main__":
         # 回補完直接算一次
         result = compute(load_history())
         OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-        OUTPUT_PATH.write_text(json.dumps(result, ensure_ascii=False),
+        OUTPUT_PATH.write_text(json.dumps(result, ensure_ascii=False, allow_nan=False),
                                encoding="utf-8")
     else:
         daily_update()
