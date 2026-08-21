@@ -39,6 +39,8 @@ OUTPUT_PATH = ROOT / "docs" / "data" / "gex_latest.json"
 KEEP_DAYS = 280           # 與股票那邊的滾動視窗一致
 
 TAIFEX_OPT_URL = "https://www.taifex.com.tw/cht/3/optDataDown"
+TAIFEX_FUT_URL = "https://www.taifex.com.tw/cht/3/futDataDown"
+TXF_COLS = ["date", "txf_settle", "txf_close", "txf_oi", "txf_night"]
 MULTIPLIER = 50          # TXO 每點 NT$50
 RISK_FREE = 0.015        # 台灣無風險利率, 影響極小
 GRID_PCT = 0.07          # flip 掃描範圍 ±7%
@@ -81,17 +83,18 @@ COL = {
 
 # ---------------------------------------------------------------- 下載
 
-def fetch_range(start: dt.date, end: dt.date, retries: int = 3) -> pd.DataFrame:
-    """抓一段期間的 TXO 每日行情。期交所限制單次查詢不超過一個月。"""
+def _post_csv(url: str, commodity: str, start: dt.date, end: dt.date,
+              *, index_col=None, retries: int = 3) -> pd.DataFrame:
+    """對期交所下載端點發 POST 並解析 CSV。"""
     payload = {
         "down_type": "1",
-        "commodity_id": "TXO",
+        "commodity_id": commodity,
         "queryStartDate": start.strftime("%Y/%m/%d"),
         "queryEndDate": end.strftime("%Y/%m/%d"),
     }
     for attempt in range(retries):
         try:
-            r = requests.post(TAIFEX_OPT_URL, data=payload, headers=HEADERS, timeout=60)
+            r = requests.post(url, data=payload, headers=HEADERS, timeout=60)
             r.raise_for_status()
             if len(r.content) < 200:
                 raise ValueError("回應過短, 可能是空區間或被擋")
@@ -104,12 +107,88 @@ def fetch_range(start: dt.date, end: dt.date, retries: int = 3) -> pd.DataFrame:
                     continue
             else:
                 raise ValueError("無法解碼回應")
-            return pd.read_csv(io.StringIO(text))
+            # low_memory=False: 期交所的到期月份欄位在同一份檔案裡會混著月選
+            # 代碼與週選代碼, 分塊推斷型別會噴 DtypeWarning
+            df = pd.read_csv(io.StringIO(text), index_col=index_col,
+                             low_memory=False)
+            df.columns = [str(c).strip() for c in df.columns]
+            return df
         except Exception as e:
             if attempt == retries - 1:
                 raise
             print(f"  重試 {attempt+1}/{retries}: {e}", file=sys.stderr)
             time.sleep(3 * (attempt + 1))
+
+
+def fetch_range(start: dt.date, end: dt.date, retries: int = 3) -> pd.DataFrame:
+    """抓一段期間的 TXO 每日行情。期交所限制單次查詢不超過一個月。"""
+    return _post_csv(TAIFEX_OPT_URL, "TXO", start, end, retries=retries)
+
+
+def fetch_txf_range(start: dt.date, end: dt.date) -> pd.DataFrame:
+    """
+    抓台指期(TX)近月行情, 每個交易日整理成一列。
+
+    兩個容易踩的地方:
+      * 商品代碼是 TX 不是 TXF —— 用 TXF 會回一個合法的 200 但空表, 很容易
+        誤判成「當天沒資料」。
+      * 資料列尾端多一個逗號(20 欄對上 19 欄的表頭), 不指定 index_col=False
+        的話 pandas 會把第一欄當索引, 整排欄位往左位移。
+
+    期交所的交易日: 夜盤在前(前日 15:00~當日 05:00), 日盤在後(08:45~13:45)。
+    夜盤那批沒有結算價也沒有 OI, 只有成交價 —— 這也是位階無法盤中更新的原因。
+    """
+    raw = _post_csv(TAIFEX_FUT_URL, "TX", start, end, index_col=False)
+    if raw.empty:
+        return pd.DataFrame(columns=TXF_COLS)
+
+    # 排除價差組合(到期月份含 '/'), 只留單式契約
+    df = raw[~raw["到期月份(週別)"].astype(str).str.contains("/")].copy()
+    df["_date"] = pd.to_datetime(df["交易日期"], errors="coerce").dt.date
+    df["_month"] = df["到期月份(週別)"].astype(str).str.strip()
+    df["_sess"] = df["交易時段"].astype(str).str.strip()
+    for c in ("結算價", "收盤價", "未沖銷契約數"):
+        df[c] = pd.to_numeric(df[c].astype(str).str.replace(",", ""), errors="coerce")
+
+    rows = []
+    for day, grp in df.groupby("_date"):
+        if day is None or pd.isna(day):
+            continue
+        rec = {"date": day.isoformat(), "txf_settle": np.nan,
+               "txf_close": np.nan, "txf_oi": np.nan, "txf_night": np.nan}
+        reg = grp[grp["_sess"] == "一般"]
+        month = None
+        if not reg.empty:
+            # 取 OI 最大的月份, 不是最近月 —— 轉倉在到期前幾天就發生了(8/17 時
+            # 九月 62k 口已經多過八月 51k), 挑近月會抓到正在死掉的那一口, 到期
+            # 當天甚至只剩 11k 口且結算價是 0。
+            main = reg.loc[reg["未沖銷契約數"].idxmax()]
+            month = main["_month"]
+            # 到期當天的結算價期交所寫 0, 跟選擇權同一個道理, 當成缺值
+            rec["txf_settle"] = main["結算價"] or np.nan
+            rec["txf_close"] = main["收盤價"]
+            rec["txf_oi"] = main["未沖銷契約數"]
+
+        aft = grp[grp["_sess"] == "盤後"]
+        if not aft.empty:
+            # 夜盤沒有 OI, 沿用日盤挑出的月份; 挑不到就退而取成交量最大的
+            same = aft[aft["_month"] == month] if month else aft.iloc[0:0]
+            pick = same.iloc[0] if not same.empty else aft.iloc[0]
+            rec["txf_night"] = pick["收盤價"]
+        rows.append(rec)
+    return pd.DataFrame(rows, columns=TXF_COLS)
+
+
+def fetch_txf_chunked(start: dt.date, end: dt.date) -> pd.DataFrame:
+    """按月切片抓期貨並串接(同 fetch_chunked, 期交所單次查詢有期間上限)。"""
+    frames, cur = [], start
+    while cur <= end:
+        nxt = min(cur + dt.timedelta(days=27), end)
+        frames.append(fetch_txf_range(cur, nxt))
+        cur = nxt + dt.timedelta(days=1)
+        time.sleep(1)
+    out = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=TXF_COLS)
+    return out.drop_duplicates(subset=["date"], keep="last")
 
 
 def fetch_chunked(start: dt.date, end: dt.date) -> pd.DataFrame:
@@ -465,8 +544,19 @@ def prepare(raw: pd.DataFrame) -> pd.DataFrame:
     return df.dropna(subset=["_trade_date", "_expiry_date"])
 
 
-HIST_COLS = ["date", "dow", "is_settle", "F", "call_wall", "put_wall", "peak",
+HIST_COLS = ["date", "dow", "is_settle", "F", "txf_settle", "txf_close",
+             "txf_oi", "txf_night", "call_wall", "put_wall", "peak",
              "valley", "micro_flip", "macro_zero", "gex_now", "net_ratio", "regime"]
+
+
+def merge_txf(rows: list[dict], txf: pd.DataFrame) -> list[dict]:
+    """把台指期價格併進每日位階。缺的日子留空, 不影響位階本身。"""
+    if txf is None or txf.empty:
+        return rows
+    by_date = txf.set_index("date").to_dict("index")
+    for r in rows:
+        r.update(by_date.get(r["date"], {}))
+    return rows
 
 
 def load_history() -> pd.DataFrame:
@@ -527,6 +617,7 @@ def backfill(start: dt.date, end: dt.date):
             if n % 20 == 0:
                 save_history(pd.DataFrame(rows))   # 中途存檔, 中斷不會前功盡棄
 
+    rows = merge_txf(rows, fetch_txf_chunked(start, end))
     save_history(pd.DataFrame(rows))
     print(f"backfill 完成: {n} 個新交易日")
 
@@ -552,6 +643,9 @@ def daily_update():
             rows.append(lv)
             print(f"  {trade_date} OK F={lv['F']}")
 
+    # 台指期價格每天都補一次(不只新算的那幾天) —— 夜盤收盤價會隨著交易日推進
+    # 補上來, 舊的列也可能因此從缺值變成有值。
+    rows = merge_txf(rows, fetch_txf_range(start, end))
     merged = save_history(pd.DataFrame(rows))
     if merged.empty:
         print("尚無任何已計算的交易日。")
