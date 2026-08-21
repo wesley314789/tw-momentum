@@ -1,0 +1,131 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+probe_taifex.py — 探測期交所資料的發布時間
+
+目的:回答兩個排程上必須知道、但只能實測的問題
+  1. 當日的選擇權未沖銷契約數(OI)幾點才公布? GEX 曲線完全靠它, 早跑沒意義。
+  2. 台指期(TX)的日盤/夜盤資料各在什麼時候可取得?
+
+只讀不寫, 不進資料檔也不 commit, 純粹把結果印到 workflow log。
+排幾個時間點跑一兩天, 就能把排程訂在有依據的時間上。
+
+用法:
+    python scripts/probe_taifex.py
+"""
+
+import io
+import sys
+from datetime import datetime, timedelta, timezone
+
+import pandas as pd
+import requests
+
+TPE = timezone(timedelta(hours=8))
+OPT_URL = "https://www.taifex.com.tw/cht/3/optDataDown"
+FUT_URL = "https://www.taifex.com.tw/cht/3/futDataDown"
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                  "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+    "Referer": "https://www.taifex.com.tw/cht/3/futDataDown",
+}
+
+
+def fetch(url: str, commodity: str, day) -> pd.DataFrame:
+    payload = {
+        "down_type": "1",
+        "commodity_id": commodity,
+        "queryStartDate": day.strftime("%Y/%m/%d"),
+        "queryEndDate": day.strftime("%Y/%m/%d"),
+    }
+    r = requests.post(url, data=payload, headers=HEADERS, timeout=60)
+    r.raise_for_status()
+    for enc in ("ms950", "big5hkscs", "utf-8-sig"):
+        try:
+            text = r.content.decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    else:
+        raise ValueError("無法解碼回應")
+    # 期交所的資料列尾端多一個逗號(20 欄 vs 表頭 19 欄), 不加 index_col=False
+    # 會被 pandas 當成索引欄而整排位移。
+    df = pd.read_csv(io.StringIO(text), index_col=False)
+    df.columns = [str(c).strip() for c in df.columns]
+    return df
+
+
+def num(s: pd.Series) -> pd.Series:
+    return pd.to_numeric(s.astype(str).str.replace(",", ""), errors="coerce")
+
+
+def session(df: pd.DataFrame, name: str) -> pd.DataFrame:
+    if "交易時段" not in df.columns:
+        return df.iloc[0:0]
+    return df[df["交易時段"].astype(str).str.strip() == name]
+
+
+def probe_options(day) -> str:
+    try:
+        df = fetch(OPT_URL, "TXO", day)
+    except Exception as e:
+        return f"抓取失敗({e.__class__.__name__})"
+    if df.empty:
+        return "尚未發布(0 列)"
+    reg = session(df, "一般")
+    if reg.empty:
+        return f"有 {len(df)} 列但無日盤資料"
+    oi = num(reg["未沖銷契約數"]).notna().sum()
+    settle = num(reg["結算價"]).notna().sum()
+    if oi == 0:
+        return f"日盤 {len(reg)} 列, OI 尚未發布"
+    return f"OK — 日盤 {len(reg)} 序列, OI {oi} 有值, 結算價 {settle} 有值"
+
+
+def probe_futures(day) -> tuple[str, str]:
+    try:
+        df = fetch(FUT_URL, "TX", day)
+    except Exception as e:
+        return f"抓取失敗({e.__class__.__name__})", "—"
+    if df.empty:
+        return "尚未發布(0 列)", "尚未發布"
+    # 排除價差組合(到期月份含 '/'), 只留單式契約, 取最近月
+    single = df[~df["到期月份(週別)"].astype(str).str.contains("/")].copy()
+    single["_m"] = single["到期月份(週別)"].astype(str).str.strip()
+
+    reg = session(single, "一般")
+    if reg.empty:
+        day_txt = "無日盤資料"
+    else:
+        front = reg.sort_values("_m").iloc[0]
+        s, oi = num(pd.Series([front["結算價"]]))[0], num(pd.Series([front["未沖銷契約數"]]))[0]
+        if pd.isna(s):
+            day_txt = f"日盤 {len(reg)} 列, 結算價尚未發布"
+        else:
+            day_txt = f"OK — 近月 {front['_m']} 結算 {s:.0f}, OI {oi:.0f}"
+
+    aft = session(single, "盤後")
+    if aft.empty:
+        night_txt = "無夜盤資料"
+    else:
+        front = aft.sort_values("_m").iloc[0]
+        c = num(pd.Series([front["收盤價"]]))[0]
+        night_txt = ("無收盤價" if pd.isna(c)
+                     else f"OK — 近月 {front['_m']} 收盤 {c:.0f}")
+    return day_txt, night_txt
+
+
+def main():
+    now = datetime.now(TPE)
+    day = now.date()
+    print(f"[probe] 台北時間 {now:%Y-%m-%d %H:%M} | 查詢交易日 {day}")
+    print(f"  TXO 選擇權 OI : {probe_options(day)}")
+    d, n = probe_futures(day)
+    print(f"  TX  期貨日盤   : {d}")
+    print(f"  TX  期貨夜盤   : {n}")
+    print("  (期交所交易日定義: 夜盤在前(前日15:00~當日05:00), 日盤在後(08:45~13:45))")
+
+
+if __name__ == "__main__":
+    sys.exit(main())

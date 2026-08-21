@@ -1,0 +1,32 @@
+name: probe-taifex
+
+# 暫時性的診斷工作:量出「期交所當日 OI 幾點才發布」。
+# GEX 曲線完全靠 OI, 現在的 21:30 排程是抓保險estimate, 不是量出來的。
+# 在日盤收盤(13:45)後的幾個時間點各查一次, 跑一兩天就知道最早可以排在幾點。
+# 結果只印到 workflow log, 不寫檔也不 commit。量到答案後這個檔案就可以刪掉。
+
+on:
+  schedule:
+    # 台北 14:00 / 15:00 / 16:00 / 17:00 / 18:00 = UTC 06:00~10:00
+    # (全部落在 UTC 06:00~23:59 的安全區內, date.today() 不會抓錯交易日)
+    - cron: "0 6,7,8,9,10 * * 1-5"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read      # 唯讀:這個工作不產生任何資料
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install pandas requests
+
+      - name: Probe TAIFEX availability
+        run: python scripts/probe_taifex.py | tee -a "$GITHUB_STEP_SUMMARY"
