@@ -632,6 +632,42 @@ def backfill(start: dt.date, end: dt.date):
     print(f"backfill 完成: {n} 個新交易日")
 
 
+def preopen_snapshot(df: pd.DataFrame, txf: pd.DataFrame,
+                     levels_date: str) -> dict:
+    """
+    盤前快照:當日夜盤已收(05:00)但日盤還沒開(08:45)時, 用夜盤收盤價重算
+    「現在落在曲線的哪一側」。
+
+    位階本身不動 —— 它們是 OI 結構的性質, 而當日 OI 要收盤後才有。這裡重算的
+    只有 gex_now / net_ratio / regime, 也就是唯一真正隨價格改變的東西
+    (實測 ±2% 的價格變動下 micro_flip 完全不動, 牆最多跳一個檔位)。
+    """
+    if txf.empty:
+        return {}
+    # 夜盤有價、日盤還沒結算 = 盤前狀態, 且要比位階那天更新
+    cand = txf[(txf["date"] > levels_date) & txf["txf_night"].notna()]
+    if cand.empty:
+        return {}
+    row = cand.sort_values("date").iloc[-1]
+    price = float(row["txf_night"])
+
+    day = dt.date.fromisoformat(levels_date)
+    chain, _ = build_chain(df[df["_trade_date"] == day], day)
+    if not chain:
+        return {}
+
+    gex = float(gex_curve([price], chain_arrays(chain))[0])
+    gross = float(gex_by_strike(price, chain)["gross"].sum())
+    ratio = abs(gex) / gross if gross else np.nan
+    return {
+        "preopen_date": row["date"],
+        "preopen_price": price,
+        "preopen_gex": gex,
+        "preopen_net_ratio": ratio,
+        "preopen_regime": regime_label(gex, ratio),
+    }
+
+
 def daily_update():
     """抓最近 7 個日曆日(含今天)並補上尚未計算過的交易日,順便寫出最新一天給前端。"""
     end = taipei_today()
@@ -655,13 +691,18 @@ def daily_update():
 
     # 台指期價格每天都補一次(不只新算的那幾天) —— 夜盤收盤價會隨著交易日推進
     # 補上來, 舊的列也可能因此從缺值變成有值。
-    rows = merge_txf(rows, fetch_txf_range(start, end))
+    txf = fetch_txf_range(start, end)
+    rows = merge_txf(rows, txf)
     merged = save_history(pd.DataFrame(rows))
     if merged.empty:
         print("尚無任何已計算的交易日。")
         return False
 
     latest = merged.sort_values("date").iloc[-1].to_dict()
+    # 盤前快照不進歷史檔:它是「還沒收盤的那天」的暫時狀態, 等當日 OI 出來
+    # 之後就會被真正的位階取代。
+    pre = preopen_snapshot(df, txf, latest["date"])
+    latest.update(pre)
     latest["updated"] = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
     # 位階可能是 NaN(當天找不到夠深的谷、或沒有零軸穿越)。json.dumps 預設會寫出
     # 裸的 NaN, 那不是合法 JSON, 前端 JSON.parse 會直接爆掉、卡片靜默消失。
@@ -669,7 +710,11 @@ def daily_update():
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT_PATH.write_text(json.dumps(latest, ensure_ascii=False, allow_nan=False),
                            encoding="utf-8")
-    print(f"完成: {latest['date']} | F={latest['F']} | regime={latest['regime']}")
+    msg = f"完成: {latest['date']} | F={latest['F']} | regime={latest['regime']}"
+    if pre:
+        msg += (f" | 盤前 {pre['preopen_date']} 夜盤收 {pre['preopen_price']:.0f}"
+                f" -> regime={pre['preopen_regime']}")
+    print(msg)
     return True
 
 

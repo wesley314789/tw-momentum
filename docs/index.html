@@ -295,31 +295,42 @@ const fmtPts = v => v==null ? "—" : Math.round(v).toLocaleString("en");
 fetch("./data/gex_latest.json")
   .then(r=>{ if(!r.ok) throw new Error(r.status); return r.json(); })
   .then(d=>{
-    $("gex-F").textContent = fmtPts(d.txf_settle ?? d.F);
+    $("gex-F").textContent = fmtPts(d.preopen_price ?? d.txf_settle ?? d.F);
     const REGIME = {
       positive: ["正 Gamma(壓抑)", "positive"],
       negative: ["負 Gamma(放大)", "negative"],
       neutral:  ["中性 · 貼近翻轉點", "neutral"],
     };
-    const [label, cls] = REGIME[d.regime] || REGIME.neutral;
+    // 盤前(當日夜盤已收、日盤未開):用夜盤價重算過的 regime 才是「現在」
+    const pre = d.preopen_price != null;
+    const regime = pre ? d.preopen_regime : d.regime;
+    const ratio  = pre ? d.preopen_net_ratio : d.net_ratio;
+
+    const [label, cls] = REGIME[regime] || REGIME.neutral;
     const badge = $("gex-regime-badge");
     badge.textContent = label;
     badge.className = "gex-regime " + cls;
-    badge.title = d.net_ratio==null ? "" :
-      `淨/總 gamma = ${(d.net_ratio*100).toFixed(1)}%,低於 5% 時正負號不可靠`;
-    // 錨點用實際的台指期結算價(使用者交易的東西);沒有就退回選擇權隱含遠期價
-    const anchor = d.txf_settle ?? d.F;
+    badge.title = ratio==null ? "" :
+      `淨/總 gamma = ${(ratio*100).toFixed(1)}%,低於 5% 時正負號不可靠`
+      + (pre ? `(以 ${d.date} 的 OI 結構、${d.preopen_date} 夜盤價重算)` : "");
+    // 錨點:盤前用剛收的夜盤價(市場現在的位置),否則用當日台指期結算價
+    const anchor = pre ? d.preopen_price : (d.txf_settle ?? d.F);
     const items = GEX_LEVELS
       .filter(t => d[t.k] != null)
       .map(t => ({price:d[t.k], label:t.label, sub:t.sub, cls:t.flip?"flip":""}));
-    items.push({price:anchor, label:"台指期", sub:`${d.date} 結算`, cls:"mark"});
+    if (pre)
+      items.push({price:d.preopen_price, label:"夜盤收",
+                  sub:`${d.preopen_date} 開盤前`, cls:"mark"});
+    if (d.txf_settle != null)
+      items.push({price:d.txf_settle, label:"台指期結算",
+                  sub:`${d.date}`, cls:pre?"":"mark"});
     // 選擇權隱含遠期價跟期貨差一個基差(不同到期日),差得夠明顯才另外標出來
     if (d.F != null && Math.abs(d.F - anchor) >= 20)
-      items.push({price:d.F, label:"選擇權隱含 F", sub:"位階的計算基準", cls:"mark"});
+      items.push({price:d.F, label:"選擇權隱含 F", sub:"位階的計算基準", cls:""});
     items.sort((a,b) => b.price - a.price);
 
     $("gex-ladder").innerHTML = items.map(it=>{
-      const dz = it.cls==="mark" && it.price===anchor ? ""
+      const dz = it.price===anchor ? ""
         : (it.price>anchor?"+":"") + Math.round(it.price-anchor).toLocaleString("en");
       return `<div class="gex-row ${it.cls}">
         <div class="lbl">${it.label}<span class="sub">${it.sub}</span></div>
@@ -327,9 +338,10 @@ fetch("./data/gex_latest.json")
         <div class="dz">${dz}</div></div>`;
     }).join("");
 
-    const night = d.txf_night==null ? "" : ` · 夜盤收 ${fmtPts(d.txf_night)}`;
-    $("gex-meta").textContent =
-      `${d.date}(${d.dow})收盤結算${night} · 更新 ${d.updated} · 右欄為距台指期點數`;
+    $("gex-meta").textContent = pre
+      ? `位階來自 ${d.date}(${d.dow})收盤結算,價格為 ${d.preopen_date} 夜盤收`
+        + ` · 未平倉量一天只結算一次,位階盤中不會變 · 更新 ${d.updated}`
+      : `${d.date}(${d.dow})收盤結算 · 更新 ${d.updated} · 右欄為距台指期點數`;
     $("gex-card").hidden = false;
   })
   .catch(()=>{ $("gex-card").hidden = true; });
