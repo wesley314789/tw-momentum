@@ -147,10 +147,18 @@ footer{max-width:1080px;margin:0 auto 40px;padding:0 24px;
     <div class="gex-ladder" id="gex-ladder"></div>
     <div class="gex-meta" id="gex-meta"></div>
     <div class="gex-note">
-      † 依賴「造市商 long call / short put」的靜態假設。以期交所三大法人留倉實測,
-      2026-06-24～08-24 的 43 個交易日中該假設僅 <b>5%</b> 成立 —— 自營商有
-      <b>95%</b> 的日子是<b>淨買 put</b>(台灣散戶賣 put 收租,與美股結構相反)。
-      標 † 的項目與上方正負 Gamma 判定請保守解讀;山頂/山谷不受影響,牆大致穩健。
+      <b>278 個交易日的實測:這些位階對交易決策幫助有限。</b>
+      牆碰到後的退回率 34.4%,與隨機位階(34.1%)無異;跌破 Micro Flip 之後不會加速
+      (p=0.20)、方向是 51/49 的隨機。「負 Gamma → 隔日波動 2 倍」統計上成立,但
+      <b>已被隱含波動率定價</b> —— 負 Gamma 日的 ATM IV 中位數 38.1%、正 Gamma 日
+      22.3%,扣掉這部分後就沒有預測力了(p=0.084)。
+      <br><br>
+      † 另外這兩項還依賴「造市商 long call / short put」的靜態假設,而該假設實測
+      43 個交易日中僅 <b>5%</b> 成立(自營商 95% 的日子是<b>淨買 put</b>,台灣散戶
+      賣 put 收租,與美股結構相反)。
+      <br><br>
+      真正不依賴任何假設、也不需要驗證的是<b>山頂/山谷/gamma 集中位置</b> ——
+      那是「未平倉壓在哪裡」的事實陳述。詳見 repo 的 README。
     </div>
   </div>
 </section>
