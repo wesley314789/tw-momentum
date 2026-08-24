@@ -111,6 +111,10 @@ footer{max-width:1080px;margin:0 auto 40px;padding:0 24px;
 .gex-row.flip .lbl{color:var(--text)}
 .gex-row .sub{font-size:11px;color:var(--muted);margin-left:6px}
 .gex-meta{margin-top:12px;font-size:11px;color:var(--muted)}
+.gex-note{margin-top:8px;padding:8px 10px;font-size:11px;line-height:1.6;
+  color:var(--muted);border-left:2px solid var(--amber);
+  background:rgba(232,179,75,.05);border-radius:0 4px 4px 0}
+.gex-note b{color:var(--amber)}
 
 @media(max-width:640px){
   .controls input{width:130px}
@@ -142,6 +146,12 @@ footer{max-width:1080px;margin:0 auto 40px;padding:0 24px;
     </div>
     <div class="gex-ladder" id="gex-ladder"></div>
     <div class="gex-meta" id="gex-meta"></div>
+    <div class="gex-note">
+      † 依賴「造市商 long call / short put」的靜態假設。以期交所三大法人留倉實測,
+      2026-06-24～08-24 的 43 個交易日中該假設僅 <b>5%</b> 成立 —— 自營商有
+      <b>95%</b> 的日子是<b>淨買 put</b>(台灣散戶賣 put 收租,與美股結構相反)。
+      標 † 的項目與上方正負 Gamma 判定請保守解讀;山頂/山谷不受影響,牆大致穩健。
+    </div>
   </div>
 </section>
 
@@ -284,9 +294,9 @@ fetch("./data/latest.json")
 
 const GEX_LEVELS = [
   {k:"call_wall",  label:"Call Wall",   sub:"上方壓力"},
-  {k:"macro_zero", label:"Macro Zero",  sub:"僅計 >7 天合約"},
+  {k:"macro_zero", label:"Macro Zero",  sub:"僅計 >7 天合約 †"},
   {k:"peak",       label:"山頂 Peak",   sub:"造市商厚牆"},
-  {k:"micro_flip", label:"Micro Flip",  sub:"正負 Gamma 分界", flip:true},
+  {k:"micro_flip", label:"Micro Flip",  sub:"正負 Gamma 分界 †", flip:true},
   {k:"valley",     label:"山谷 Valley", sub:"加速真空帶"},
   {k:"put_wall",   label:"Put Wall",    sub:"下方支撐"},
 ];

@@ -398,8 +398,25 @@ def gamma_matrix(F_grid, K, T, iv):
 def gex_curve(F_grid, arrays) -> np.ndarray:
     """
     在每個模擬價位重算全鏈 dollar gamma。
-    符號採靜態假設: 造市商 long call / short put。
-    這是整套最脆弱的假設 —— 改成流量歸屬會得到不同結果。
+
+    符號採靜態假設: 造市商 long call / short put(net = oi_c - oi_p)。
+
+    ⚠ 這個假設在台指選擇權**實測不成立**。期交所的三大法人留倉(免費, 見
+    callsAndPutsDateDown)顯示 2026-06-24 ~ 08-24 的 43 個交易日中:
+        自營商 CALL 淨買 39/43 天(91%, 平均 +4,201 口)  -> 與假設相符
+        自營商 PUT  淨買 41/43 天(95%, 平均 +5,217 口)  -> 與假設相反
+        兩個條件同時成立: 僅 2/43 天(5%)
+    原因是市場結構不同: 這個公式借自美股 SPX 的慣例(散戶買 put 避險 -> 造市商
+    被迫 short put), 但台灣散戶大量賣 put 收租(散戶 put 空方 59% > 多方 54.5%),
+    所以自營商接到的是 long put。
+
+    受影響的是**淨額的符號**, 也就是零軸穿越(micro_flip / macro_zero)與正負
+    判定(regime)。gross gamma 的東西(peak / valley)完全不受影響, 牆也大致穩健
+    (實測 8 天中 Call Wall 5 天、Put Wall 7 天與單邊定義同解)。
+
+    要真的修好需要逐履約價的流量歸屬(判斷成交打在買價還賣價), 那要 tick 資料。
+    另外自營商只持有全市場約 1/3 部位, 且該欄位混著登記造市者與方向性自營交易,
+    連「造市商是誰」在公開資料裡都不乾淨。
     """
     K, T, iv, net, _ = arrays
     F_col = np.atleast_1d(np.asarray(F_grid, dtype=float))[:, None]
