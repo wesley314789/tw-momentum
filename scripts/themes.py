@@ -49,7 +49,12 @@ THEMES = {
     "軍工・國防": ["軍工", "國防", "無人機", "軍用", "航太", "飛彈"],
     "航運": ["航運", "貨櫃", "SCFI", "運價", "散裝", "BDI", "海運", "船東"],
     "生技・醫材": ["生技", "新藥", "臨床", "FDA", "醫材", "藥證", "授權金",
-                  "解盲"],
+                  "解盲", "矽水膠", "隱形眼鏡", "疫苗", "生醫", "檢測試劑",
+                  "醫美"],
+    "併購・資本操作": ["併購", "收購", "公開收購", "私有化", "換股", "入主",
+                    "拆股", "面額", "MSCI", "納入指數"],
+    "連接器・線纜": ["連接器", "線纜", "端子", "纜線", "電源線"],
+    "邊緣運算・工業電腦": ["工業電腦", "IPC", "邊緣運算", "邊緣AI", "智慧城市"],
     "重電・電力": ["重電", "電網", "變壓器", "電力", "儲能", "太陽能"],
     "半導體材料・設備": ["矽晶圓", "磊晶", "晶圓代工", "先進封裝", "光罩",
                        "半導體設備", "CoWoS", "潔淨", "擴廠", "耗材"],
@@ -57,6 +62,11 @@ THEMES = {
     "機器人": ["機器人", "人形", "自動化"],
     "IC設計": ["IC設計", "ASIC", "MCU", "矽智財", "IP"],
 }
+
+# 平手時的優先序。事件型題材(拆股、併購、納入指數)講的是「這波為什麼漲」,
+# 產業型題材只是背景 —— 沛爾生醫確實是生技公司, 所以生技類新聞一直都有,
+# 但它這波漲的是調降面額與 MSCI 納入。兩邊同分時要讓事件贏。
+TIE_BREAK = {"併購・資本操作": 1}
 
 # 風險旗標:漲太兇被交易所盯上, 是警訊不是題材
 FLAGS = {
@@ -87,22 +97,43 @@ def fetch_all(stocks: list[tuple]) -> dict:
     return out
 
 
-def classify(headlines: list[str]) -> tuple[str | None, list[str]]:
+def strip_name(headlines: list[str], name: str) -> list[str]:
+    """
+    比對前先把公司名從標題拿掉。
+
+    公司名會出現在關於它的每一則標題裡, 所以只要名字裡含有任何關鍵字, 該題材
+    就必然拿滿分 —— 「沛爾生醫」會因為名字裡的「生醫」被判成生技股, 但它那波
+    漲的是拆股與 MSCI 納入, 跟生技無關。我們要問的是「什麼在帶動它」, 不是
+    「它屬於哪個行業」, 所以名字不該參與計分。
+    """
+    parts = [name, name.split("-")[0], name.replace("*", "")]
+    out = []
+    for h in headlines:
+        for p in sorted(set(parts), key=len, reverse=True):
+            if len(p) >= 2:
+                h = h.replace(p, "")
+        out.append(h)
+    return out
+
+
+def classify(headlines: list[str], name: str = "") -> tuple[str | None, list[str]]:
     """
     回傳 (題材, 旗標)。分數是「有幾則不同的新聞提到這個題材」, 不是關鍵字
     總出現次數 —— 否則一則標題塞滿同義詞就能決定結果。不足 MIN_HITS 就回
     None, 寧可留白讓人翻標題, 也不硬歸類。
     """
+    scored = strip_name(headlines, name) if name else headlines
     scores = {}
     for theme, words in THEMES.items():
-        n = sum(1 for h in headlines if any(w in h for w in words))
+        n = sum(1 for h in scored if any(w in h for w in words))
         if n:
             scores[theme] = n
-    blob = " ".join(headlines)
+    blob = " ".join(scored)
     flags = [f for f, words in FLAGS.items() if any(w in blob for w in words)]
     if not scores:
         return None, flags
-    theme, n = max(scores.items(), key=lambda kv: kv[1])
+    theme, n = max(scores.items(),
+                   key=lambda kv: (kv[1], TIE_BREAK.get(kv[0], 0)))
     return (theme if n >= MIN_HITS else None), flags
 
 
@@ -134,7 +165,7 @@ def annotate(picks: list[dict]) -> list[dict]:
     news = fetch_all([(p["code"], p["name"]) for p in picks])
     for p in picks:
         heads = news.get(p["code"], [])
-        theme, flags = classify(heads)
+        theme, flags = classify(heads, p.get("name", ""))
         if p["code"] in ov:
             p["theme"] = ov[p["code"]]
             p["theme_src"] = "override"
