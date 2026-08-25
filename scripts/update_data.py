@@ -24,6 +24,8 @@ import requests
 ROOT = Path(__file__).resolve().parent.parent
 HISTORY_PATH = ROOT / "data" / "history.csv.gz"
 INDEX_PATH = ROOT / "data" / "index.csv.gz"
+SHARES_PATH = ROOT / "data" / "shares.csv"
+BREADTH_PATH = ROOT / "data" / "breadth.csv"
 OUTPUT_PATH = ROOT / "docs" / "data" / "latest.json"
 KEEP_DAYS = 280  # 滾動保留的交易日數(> 252 即可算 52 週)
 
@@ -33,6 +35,13 @@ MIN_VALUE = 1.0    # 成交值下限(億)。兩份清單共用 —— 沒有這�
 MIN_RS = 70        # SEPA 的 RS 下限
 DAILY_CHG = 4.0    # 當日強勢: 漲幅下限(%)
 DAILY_VOL_RATIO = 1.5   # 當日強勢: 量比下限
+
+# 動能篩選(市場廣度用)。條件照 TradingView 那組:
+#   價格 > SMA200、SMA10 > SMA20、總市值 > 20 億、成交值 > 5000 萬、一個月績效 > 20%
+BR_MCAP = 2e9      # 總市值下限(元)
+BR_TURNOVER = 5e7  # 成交值下限(元)
+BR_PERF = 20.0     # 一個月績效下限(%)
+BR_PERF_DAYS = 21  # 「一個月」取 21 個交易日
 
 HEADERS = {"User-Agent": "Mozilla/5.0 (tw-momentum-scanner)"}
 
@@ -112,16 +121,21 @@ def fetch_twse_date(d: date) -> tuple[pd.DataFrame, float | None]:
     return pd.DataFrame(rows), index_close
 
 
-def fetch_tpex_date(d: date) -> pd.DataFrame:
-    """櫃買中心:歷史單日上櫃個股收盤(免金鑰,backfill 用)。"""
+def fetch_tpex_date(d: date, with_raw: bool = False):
+    """
+    櫃買中心:歷史單日上櫃個股收盤(免金鑰,backfill 用)。
+
+    with_raw=True 時額外回傳發行股數(欄位索引 15) —— 上櫃的股數就藏在這份每日
+    行情裡, 不必另外打一支 API。
+    """
     url = "https://www.tpex.org.tw/www/zh-tw/afterTrading/dailyQuotes"
     params = {"date": d.strftime("%Y/%m/%d")}
     r = _get_with_retry(url, params=params, timeout=30)
     table = next((t for t in r.json().get("tables", [])
                   if "上櫃股票行情" in t.get("title", "")), None)
     if table is None:
-        return pd.DataFrame()
-    rows = []
+        return (pd.DataFrame(), []) if with_raw else pd.DataFrame()
+    rows, shares = [], []
     for it in table["data"]:
         code = it[0].strip()
         if not is_common_stock(code):
@@ -141,7 +155,52 @@ def fetch_tpex_date(d: date) -> pd.DataFrame:
             "volume": to_float(it[8]) or 0,
             "value": to_float(it[9]) or 0,
         })
-    return pd.DataFrame(rows)
+        n = to_float(it[15]) if len(it) > 15 else None
+        if n:
+            shares.append({"code": code, "shares": n})
+    return (pd.DataFrame(rows), shares) if with_raw else pd.DataFrame(rows)
+
+
+def fetch_shares() -> pd.DataFrame:
+    """
+    發行股數(算總市值用)。上市取證交所公司基本資料 OpenAPI, 上櫃直接在每日行情
+    裡就有(欄位「發行股數」)。
+
+    注意: 這兩個來源給的都是**當下**的股數, 沒有歷史。回補歷史廣度時等於用今天
+    的股數去乘過去的股價, 遇到現金增資/減資的個股會失真。因為市值門檻只是個粗
+    篩(20 億), 多數個股離門檻很遠, 影響有限, 但要知道有這回事。
+    """
+    rows = []
+    r = _get_with_retry("https://openapi.twse.com.tw/v1/opendata/t187ap03_L", timeout=40)
+    payload = r.json()
+    # 欄位名稱用比對找, 不寫死 —— 它實際叫「已發行普通股數或TDR原股發行股數」,
+    # 少抄一個「股」字就會全部解析失敗而且不會報錯(只是安靜地一筆都對不上)。
+    key = next((k for k in payload[0]
+                if "已發行" in k and "股數" in k), None) if payload else None
+    if key is None:
+        raise ValueError(f"找不到發行股數欄位, 現有欄位: {list(payload[0])[:12]}")
+    for it in payload:
+        code = str(it.get("公司代號", "")).strip()
+        n = to_float(it.get(key))
+        if is_common_stock(code) and n:
+            rows.append({"code": code, "shares": n})
+
+    _, tpex_raw = fetch_tpex_date(date.today(), with_raw=True)
+    rows.extend(tpex_raw)
+
+    df = pd.DataFrame(rows).drop_duplicates(subset=["code"], keep="first")
+    return df[df["shares"] > 0]
+
+
+def load_shares() -> pd.DataFrame:
+    if SHARES_PATH.exists():
+        return pd.read_csv(SHARES_PATH, dtype={"code": str})
+    return pd.DataFrame(columns=["code", "shares"])
+
+
+def save_shares(df: pd.DataFrame):
+    SHARES_PATH.parent.mkdir(parents=True, exist_ok=True)
+    df.sort_values("code").to_csv(SHARES_PATH, index=False, float_format="%.0f")
 
 
 # ---------------------------------------------------------------- history
@@ -219,6 +278,98 @@ def backfill():
     save_history(merged)
     save_index_history(pd.DataFrame(idx_rows))
     print(f"backfill 完成:{fetched} 個交易日")
+
+
+# ---------------------------------------------------------------- 市場廣度
+
+def momentum_screen(hist: pd.DataFrame, shares: pd.DataFrame,
+                    as_of: str | None = None) -> pd.DataFrame:
+    """
+    動能篩選(TradingView 那組條件),回傳通過的個股。
+
+        價格 > SMA200、SMA10 > SMA20、總市值 > BR_MCAP、
+        成交值 > BR_TURNOVER、BR_PERF_DAYS 個交易日績效 > BR_PERF%
+
+    需要 200 天以上的歷史才算得出 SMA200, 所以歷史視窗前 200 天無法回補。
+    """
+    if as_of:
+        hist = hist[hist["date"] <= as_of]
+    dates = sorted(hist["date"].unique())
+    if len(dates) < 200:
+        return pd.DataFrame()
+    today = dates[-1]
+
+    sh = dict(zip(shares["code"], shares["shares"]))
+    rows = []
+    for code, g in hist.sort_values("date").groupby("code"):
+        if g["date"].iloc[-1] != today:      # 當天沒交易(停牌等)就跳過
+            continue
+        c = g["close"].to_numpy()
+        if len(c) < 200:
+            continue
+        close = c[-1]
+        n = sh.get(code)
+        if not n:
+            continue
+        turnover = g["value"].iloc[-1]
+        perf = (close / c[-BR_PERF_DAYS - 1] - 1) * 100 if len(c) > BR_PERF_DAYS else None
+        if perf is None:
+            continue
+        if not (close > c[-200:].mean()
+                and c[-10:].mean() > c[-20:].mean()
+                and close * n > BR_MCAP
+                and turnover > BR_TURNOVER
+                and perf > BR_PERF):
+            continue
+        rows.append({"code": code, "name": g["name"].iloc[-1],
+                     "market": g["market"].iloc[-1], "close": round(close, 2),
+                     "perf_1m": round(perf, 1),
+                     "value": round(turnover / 1e8, 2),
+                     "mcap": round(close * n / 1e8, 0)})
+    df = pd.DataFrame(rows)
+    return df.sort_values("perf_1m", ascending=False) if len(df) else df
+
+
+def load_breadth() -> pd.DataFrame:
+    if BREADTH_PATH.exists():
+        return pd.read_csv(BREADTH_PATH, dtype={"date": str})
+    return pd.DataFrame(columns=["date", "count", "universe", "pct"])
+
+
+def save_breadth(df: pd.DataFrame) -> pd.DataFrame:
+    BREADTH_PATH.parent.mkdir(parents=True, exist_ok=True)
+    df = df.drop_duplicates(subset=["date"], keep="last").sort_values("date")
+    df = df[df["date"].isin(sorted(df["date"].unique())[-KEEP_DAYS:])]
+    df.to_csv(BREADTH_PATH, index=False)
+    return df
+
+
+def update_breadth(hist: pd.DataFrame, shares: pd.DataFrame,
+                   backfill: bool = False) -> pd.DataFrame:
+    """
+    記錄每日通過動能篩選的檔數 —— 這就是市場廣度。
+
+    數字本身比名單更有用:同樣是大盤上漲, 通過的檔數在擴張還是萎縮, 代表漲勢
+    是全面的還是集中在少數幾檔。
+    """
+    br = load_breadth()
+    have = set(br["date"])
+    dates = sorted(hist["date"].unique())
+    todo = dates[199:] if backfill else dates[-1:]   # 前 200 天算不出 SMA200
+    todo = [d for d in todo if backfill or d not in have]
+
+    rows = br.to_dict("records")
+    for i, d in enumerate(todo, 1):
+        if d in have and not backfill:
+            continue
+        sub = hist[hist["date"] <= d]
+        picks = momentum_screen(sub, shares)
+        universe = int((hist["date"] == d).sum())
+        rows.append({"date": d, "count": len(picks), "universe": universe,
+                     "pct": round(len(picks) / universe * 100, 2) if universe else 0})
+        if backfill and i % 20 == 0:
+            print(f"  廣度回補 {i}/{len(todo)} ({d}: {len(picks)} 檔)", flush=True)
+    return save_breadth(pd.DataFrame(rows))
 
 
 # ---------------------------------------------------------------- compute
@@ -410,11 +561,26 @@ def daily_update():
         save_index_history(idx_hist)
 
     result = compute(merged)
+
+    # 動能篩選 + 市場廣度。發行股數每天更新一次(公司會增減資)。
+    try:
+        shares = fetch_shares()
+        save_shares(shares)
+    except Exception as e:
+        print(f"發行股數抓取失敗({e.__class__.__name__}),沿用既有的。")
+        shares = load_shares()
+    picks = momentum_screen(merged, shares)
+    breadth = update_breadth(merged, shares)
+    result["momentum"] = [{k: (None if pd.isna(v) else v) for k, v in r.items()}
+                          for r in picks.to_dict("records")]
+    result["breadth"] = breadth.tail(120).to_dict("records")
+
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT_PATH.write_text(json.dumps(result, ensure_ascii=False, allow_nan=False),
                            encoding="utf-8")
     print(f"完成:{result['trade_date']} | 全市場 {result['universe']} 檔 | "
-          f"SEPA {len(result['sepa'])} 檔 | 當日強勢 {len(result['daily'])} 檔")
+          f"SEPA {len(result['sepa'])} 檔 | 當日強勢 {len(result['daily'])} 檔 | "
+          f"動能 {len(result['momentum'])} 檔")
     return True
 
 
