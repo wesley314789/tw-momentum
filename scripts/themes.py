@@ -14,11 +14,17 @@ themes.py — 從新聞標題判斷個股的族群題材
 
 被列處置股/注意股會另外標記:那代表短期漲太兇被盯上, 是風險訊號而不是題材。
 """
+import csv
 import urllib.parse
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import requests
+
+# 人工(或排程的 Claude 任務)研究出來的題材, 優先於關鍵字比對。
+# 欄位: code, theme, source, updated —— source 記下判斷依據, 方便事後回頭驗證。
+OVERRIDES_PATH = Path(__file__).resolve().parent.parent / "data" / "theme_overrides.csv"
 
 RSS = "https://news.google.com/rss/search?q={}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
@@ -100,18 +106,41 @@ def classify(headlines: list[str]) -> tuple[str | None, list[str]]:
     return (theme if n >= MIN_HITS else None), flags
 
 
+def load_overrides() -> dict:
+    """讀人工/排程研究出來的題材對照表。檔案不存在就當空的。"""
+    if not OVERRIDES_PATH.exists():
+        return {}
+    out = {}
+    with OVERRIDES_PATH.open(encoding="utf-8-sig", newline="") as f:
+        for row in csv.DictReader(f):
+            code = (row.get("code") or "").strip()
+            theme = (row.get("theme") or "").strip()
+            if code and theme:
+                out[code] = theme
+    return out
+
+
 def annotate(picks: list[dict]) -> list[dict]:
     """
     對篩選結果標上題材與旗標, 並附上前三則標題供人工覆核。
     picks 需含 code / name 欄位, 就地加上 theme / flags / news。
+
+    theme_overrides.csv 裡有的個股直接採用該題材(關鍵字比對抓不到新題材,
+    所以留一條人工/LLM 補強的路), 並標 theme_src 讓前端能區分來源。
     """
     if not picks:
         return picks
+    ov = load_overrides()
     news = fetch_all([(p["code"], p["name"]) for p in picks])
     for p in picks:
         heads = news.get(p["code"], [])
         theme, flags = classify(heads)
-        p["theme"] = theme
+        if p["code"] in ov:
+            p["theme"] = ov[p["code"]]
+            p["theme_src"] = "override"
+        else:
+            p["theme"] = theme
+            p["theme_src"] = "keyword" if theme else None
         p["flags"] = flags
         p["news"] = heads[:3]
     return picks
