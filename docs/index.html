@@ -156,6 +156,8 @@ footer{max-width:1080px;margin:0 auto 40px;padding:0 24px;
     <button class="tab" role="tab" data-tab="daily">當日強勢<span class="count" id="cnt-daily"></span></button>
     <button class="tab" role="tab" data-tab="momentum">動能篩選<span class="count" id="cnt-momentum"></span></button>
     <button class="tab" role="tab" data-tab="breadth">市場廣度</button>
+    <button class="tab" role="tab" data-tab="us">美股動能<span class="count" id="cnt-us"></span></button>
+    <button class="tab" role="tab" data-tab="usbreadth">美股廣度</button>
   </div>
 </header>
 
@@ -228,7 +230,8 @@ footer{max-width:1080px;margin:0 auto 40px;padding:0 24px;
   SEPA:收盤 > 50MA > 150MA > 200MA(且 200MA 上升)、高於 52 週低點 30%+、距 52 週高點 25% 內、RS ≥ 70、成交值 ≥ 1 億。
   當日強勢:漲幅 ≥ 4%、量比 ≥ 1.5、成交值 ≥ 1 億。
   動能篩選:收盤 > 200MA、10MA > 20MA、總市值 ≥ 20 億、成交值 ≥ 5,000 萬、近 21 個交易日績效 ≥ 20%;市場廣度即為每日通過此篩選的檔數。
-  資料來源:證交所/櫃買中心 OpenAPI,盤後更新,僅供研究參考。
+  美股用同一組條件,門檻改為市值 ≥ $5 億、成交值 ≥ $500 萬。
+  資料來源:台股為證交所/櫃買中心 OpenAPI;美股宇宙與市值取自 Nasdaq screener、日 K 取自 Yahoo(非官方 API,無服務保證)。盤後更新,僅供研究參考。
 </footer>
 
 <script>
@@ -251,19 +254,29 @@ const COLS_MOMENTUM = [
   {k:"value",  label:"成交值(億)", num:true},
   {k:"mcap",   label:"市值(億)", num:true, opt:true},
 ];
+const COLS_US = [
+  {k:"symbol", label:"代號", num:false},
+  {k:"name",   label:"名稱", num:false},
+  {k:"close",  label:"收盤($)", num:true},
+  {k:"perf_1m",label:"1月績效", num:true},
+  {k:"turnover",label:"成交值($M)", num:true},
+  {k:"mcap",   label:"市值($B)", num:true, opt:true},
+];
 
-let DATA = {sepa:[], daily:[], momentum:[], breadth:[]};
+let DATA = {sepa:[], daily:[], momentum:[], breadth:[], us:[], usbreadth:[]};
 let tab = "sepa";
 let sortKey = "rs", sortDir = -1;
 
 const $ = id => document.getElementById(id);
-const cols = () => tab==="momentum" ? COLS_MOMENTUM : COLS;
+const cols = () => tab==="us" ? COLS_US : tab==="momentum" ? COLS_MOMENTUM : COLS;
+const isUS = () => tab==="us" || tab==="usbreadth";
 const fmt = (v,k)=>{
   if(v==null) return "—";
   if(k==="chg_pct") return (v>0?"+":"")+v.toFixed(2)+"%";
   if(k==="perf_1m") return "+"+v.toFixed(1)+"%";
   if(k==="off_high") return v.toFixed(1)+"%";
-  if(k==="mcap") return Math.round(v).toLocaleString("en");
+  if(k==="mcap") return tab==="us" ? v.toFixed(1) : Math.round(v).toLocaleString("en");
+  if(k==="turnover") return Math.round(v).toLocaleString("en");
   if(k==="close") return v.toLocaleString("en",{minimumFractionDigits:v<100?2:1});
   return v;
 };
@@ -286,11 +299,12 @@ function rows(){
   const q = $("q").value.trim().toLowerCase();
   const mkt = $("mkt").value;
   const rsmin = tab==="sepa" ? +$("rsmin").value : 0;
-  let r = DATA[tab].filter(x=>
-    (!q || x.code.includes(q) || (x.name||"").toLowerCase().includes(q)) &&
-    (!mkt || x.market===mkt) &&
-    (x.rs==null ? rsmin===0 : x.rs>=rsmin)
-  );
+  let r = (DATA[tab]||[]).filter(x=>{
+    const id = x.code || x.symbol || "";
+    return (!q || id.toLowerCase().includes(q) || (x.name||"").toLowerCase().includes(q)) &&
+      (isUS() || !mkt || x.market===mkt) &&
+      (x.rs==null ? rsmin===0 : x.rs>=rsmin);
+  });
   r.sort((a,b)=>{
     const A=a[sortKey], B=b[sortKey];
     if(A==null) return 1; if(B==null) return -1;
@@ -300,7 +314,7 @@ function rows(){
 }
 
 function render(){
-  const isBreadth = tab==="breadth";
+  const isBreadth = tab==="breadth" || tab==="usbreadth";
   $("breadth-panel").hidden = !isBreadth;
   $("stock-table").hidden = isBreadth;
   if(isBreadth){ $("empty").hidden = true; renderBreadth(); return; }
@@ -308,7 +322,25 @@ function render(){
   renderHead();
   const r = rows();
   $("empty").hidden = r.length>0;
-  if(!r.length) $("empty").textContent = "沒有符合條件的個股 — 調整篩選或等資料更新";
+  if(!r.length) $("empty").textContent = tab==="us"
+    ? "尚無美股資料 — 請先執行 python scripts/us_breadth.py --backfill"
+    : "沒有符合條件的個股 — 調整篩選或等資料更新";
+
+  if(tab==="us"){
+    $("tbody").innerHTML = r.map(x=>
+      `<tr data-url="https://finance.yahoo.com/quote/${x.symbol}">
+        <td>${x.symbol}</td>
+        <td class="name">${x.name||""}</td>
+        <td>${fmt(x.close,"close")}</td>
+        <td><span class="badge up">${fmt(x.perf_1m,"perf_1m")}</span></td>
+        <td>${fmt(x.turnover,"turnover")}</td>
+        <td class="col-opt">${fmt(x.mcap,"mcap")}</td>
+      </tr>`).join("");
+    $("tbody").querySelectorAll("tr").forEach(tr=>{
+      tr.onclick = ()=>window.open(tr.dataset.url,"_blank");
+    });
+    return;
+  }
 
   if(tab==="momentum"){
     $("tbody").innerHTML = r.map(x=>{
@@ -348,10 +380,14 @@ function render(){
 }
 
 function renderBreadth(){
-  const b = DATA.breadth || [];
+  const us = tab==="usbreadth";
+  const b = (us ? DATA.usbreadth : DATA.breadth) || [];
+  const unit = us ? "檔 / 美股" : "檔 / ";
   if(!b.length){
     $("br-now").textContent = "—";
-    $("br-sub").textContent = "尚無廣度資料";
+    $("br-sub").textContent = us
+      ? "尚無美股廣度資料 — 請先執行 python scripts/us_breadth.py --backfill"
+      : "尚無廣度資料";
     $("br-chart").innerHTML = ""; $("br-tbody").innerHTML = ""; $("br-stats").innerHTML = "";
     return;
   }
@@ -360,9 +396,11 @@ function renderBreadth(){
   const max = Math.max(...counts, 1);
   const avg20 = counts.slice(-20).reduce((s,v)=>s+v,0) / Math.min(20, counts.length);
 
-  $("br-now").innerHTML = `${last.count}<small>檔 / ${last.universe} 檔全市場</small>`;
+  $("br-now").innerHTML = `${last.count}<small>${unit}${last.universe} 檔${us?"":"全市場"}</small>`;
   $("br-sub").textContent =
-    `${last.date} · 佔 ${last.pct.toFixed(1)}% · 通過動能篩選的檔數;數字擴張代表漲勢全面,萎縮代表集中在少數股`;
+    `${last.date} · 佔 ${last.pct.toFixed(1)}%`
+    + (us ? " · 市值 > $5 億的美股" : "")
+    + " · 通過動能篩選的檔數;數字擴張代表漲勢全面,萎縮代表集中在少數股";
   $("br-stats").innerHTML = [
     ["20 日均", avg20.toFixed(0)],
     ["區間最高", Math.max(...counts)],
@@ -395,10 +433,11 @@ document.querySelectorAll(".tab").forEach(b=>{
     b.classList.add("active");
     tab = b.dataset.tab;
     $("rsmin").disabled = tab!=="sepa";
+    $("mkt").disabled = isUS();
     // 廣度看的是整個市場的統計,個股搜尋/市場別在那一頁沒有意義
-    document.querySelector(".controls").hidden = tab==="breadth";
+    document.querySelector(".controls").hidden = tab==="breadth" || tab==="usbreadth";
     if(tab==="daily") sortKey="chg_pct";
-    else if(tab==="momentum") sortKey="perf_1m";
+    else if(tab==="momentum" || tab==="us") sortKey="perf_1m";
     else sortKey="rs";
     sortDir=-1;
     render();
@@ -409,7 +448,8 @@ document.querySelectorAll(".tab").forEach(b=>{
 fetch("./data/latest.json")
   .then(r=>{ if(!r.ok) throw new Error(r.status); return r.json(); })
   .then(d=>{
-    DATA = d;
+    // 合併而非覆蓋 —— 美股是另一支 fetch, 誰先回來不一定, 直接指派會把對方洗掉
+    DATA = {...DATA, ...d};
     $("meta").textContent = `${d.trade_date} 收盤 · 全市場 ${d.universe} 檔 · 更新 ${d.updated}`;
     $("cnt-sepa").textContent = d.sepa.length;
     $("cnt-daily").textContent = d.daily.length;
@@ -421,6 +461,18 @@ fetch("./data/latest.json")
     $("empty").hidden = false;
     $("empty").innerHTML = `尚無資料 — 請先執行 <code>python scripts/update_data.py --backfill</code> 產生 data/latest.json`;
   });
+
+// 美股是另一支腳本產生的,分開抓;抓不到就讓那兩個分頁空著,不影響台股
+fetch("./data/us_latest.json")
+  .then(r=>{ if(!r.ok) throw new Error(r.status); return r.json(); })
+  .then(d=>{
+    DATA.us = d.picks || [];
+    DATA.usbreadth = d.breadth || [];
+    DATA.us_meta = d;
+    $("cnt-us").textContent = DATA.us.length;
+    if(isUS()) render();
+  })
+  .catch(()=>{});
 
 const GEX_LEVELS = [
   {k:"call_wall",  label:"Call Wall",   sub:"上方壓力"},
