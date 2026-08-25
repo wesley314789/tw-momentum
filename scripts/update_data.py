@@ -371,13 +371,26 @@ def compute(hist: pd.DataFrame, idx_hist: pd.DataFrame | None = None) -> dict:
 # ---------------------------------------------------------------- main
 
 def daily_update():
+    # runner 是 UTC。台灣交易日在台北 13:30 收盤(= UTC 05:30), 而 UTC 日期要到
+    # UTC 00:00(台北 08:00)才跳日, 因此 UTC 06:00~23:59 之間 today() 都等於
+    # 「最近一個收完的交易日」。兩班排程(台北 14:30 / 07:00)都落在這個區間內。
     today = date.today()
     twse, index_close = fetch_twse_date(today)
     tpex = fetch_tpex_date(today)
-    today_df = pd.concat([twse, tpex], ignore_index=True)
-    if today_df.empty:
+
+    # 兩邊都要有資料才寫入。收盤後不久跑時, 證交所與櫃買的發布時間不見得同步,
+    # 只擋「兩邊都空」的話會把只有半個市場的資料寫進歷史 —— 那天的 RS 百分位
+    # 和全市場檔數都會失真, 而且會一直留在滾動視窗裡。缺的那次跳過就好, 下一班
+    # 會用同一個 today 重抓補上。
+    if twse.empty and tpex.empty:
         print("今日無資料(假日?),跳過。")
         return False
+    if twse.empty or tpex.empty:
+        missing = "證交所" if twse.empty else "櫃買中心"
+        print(f"{missing}尚未發布當日資料,跳過這次(避免寫入半個市場)。")
+        return False
+
+    today_df = pd.concat([twse, tpex], ignore_index=True)
 
     hist = load_history()
     # 名稱/市場別以最新資料為準,回填舊資料
