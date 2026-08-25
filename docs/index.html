@@ -131,6 +131,23 @@ footer{max-width:1080px;margin:0 auto 40px;padding:0 24px;
 .br-bar{display:inline-block;height:6px;border-radius:3px;background:var(--amber);
   opacity:.5;vertical-align:middle}
 
+/* 族群題材 */
+.th-wrap{display:flex;flex-direction:column;gap:14px;padding:14px 0}
+.th-group{background:var(--surface);border:1px solid var(--line);
+  border-radius:10px;overflow:hidden}
+.th-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;
+  padding:11px 14px;background:var(--surface-2)}
+.th-name{font-weight:700;font-size:14px}
+.th-stat{font-family:var(--mono);font-size:12px;color:var(--muted)}
+.th-stat b{color:var(--text)}
+.th-group table{font-size:13px}
+.th-group tbody td{padding:7px 14px}
+.th-group thead{display:none}
+.flag{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:4px;
+  font-size:11px;font-family:var(--sans);background:var(--up-dim);color:var(--up)}
+.th-news{font-size:11px;color:var(--muted);padding:0 14px 10px;line-height:1.7}
+.th-news a{color:var(--muted);text-decoration:underline;text-underline-offset:2px}
+
 .gex-note{margin-top:8px;padding:8px 10px;font-size:11px;line-height:1.6;
   color:var(--muted);border-left:2px solid var(--amber);
   background:rgba(232,179,75,.05);border-radius:0 4px 4px 0}
@@ -155,6 +172,7 @@ footer{max-width:1080px;margin:0 auto 40px;padding:0 24px;
     <button class="tab active" role="tab" data-tab="sepa">SEPA Trend Template<span class="count" id="cnt-sepa"></span></button>
     <button class="tab" role="tab" data-tab="daily">當日強勢<span class="count" id="cnt-daily"></span></button>
     <button class="tab" role="tab" data-tab="momentum">動能篩選<span class="count" id="cnt-momentum"></span></button>
+    <button class="tab" role="tab" data-tab="themes">族群題材<span class="count" id="cnt-themes"></span></button>
     <button class="tab" role="tab" data-tab="breadth">市場廣度</button>
     <button class="tab" role="tab" data-tab="us">美股動能<span class="count" id="cnt-us"></span></button>
     <button class="tab" role="tab" data-tab="usbreadth">美股廣度</button>
@@ -209,6 +227,8 @@ footer{max-width:1080px;margin:0 auto 40px;padding:0 24px;
     <tbody id="tbody"></tbody>
   </table>
   <div class="empty" id="empty" hidden></div>
+
+  <div class="th-wrap" id="themes-panel" hidden></div>
 
   <section id="breadth-panel" hidden>
     <div class="br-head">
@@ -315,9 +335,12 @@ function rows(){
 
 function render(){
   const isBreadth = tab==="breadth" || tab==="usbreadth";
+  const isThemes = tab==="themes";
   $("breadth-panel").hidden = !isBreadth;
-  $("stock-table").hidden = isBreadth;
+  $("themes-panel").hidden = !isThemes;
+  $("stock-table").hidden = isBreadth || isThemes;
   if(isBreadth){ $("empty").hidden = true; renderBreadth(); return; }
+  if(isThemes){ $("empty").hidden = true; renderThemes(); return; }
 
   renderHead();
   const r = rows();
@@ -379,6 +402,51 @@ function render(){
   });
 }
 
+function renderThemes(){
+  const groups = DATA.themes || [];
+  if(!groups.length){
+    $("themes-panel").innerHTML =
+      `<div class="empty">尚無族群資料 — 題材由新聞標題關鍵字判斷,需執行 update_data.py</div>`;
+    return;
+  }
+  const byTheme = {};
+  (DATA.momentum||[]).forEach(x=>{
+    (byTheme[x.theme || "未歸類"] ||= []).push(x);
+  });
+
+  $("themes-panel").innerHTML = groups.map(g=>{
+    const list = (byTheme[g.theme]||[]).slice().sort((a,b)=>b.perf_1m-a.perf_1m);
+    const rows = list.map(x=>{
+      const flags = (x.flags||[]).map(f=>`<span class="flag">${f}</span>`).join("");
+      return `<tr data-url="https://tw.stock.yahoo.com/quote/${x.code}${x.market==="上櫃"?".TWO":".TW"}">
+        <td>${x.code}</td>
+        <td class="name">${x.name}${flags}</td>
+        <td>${fmt(x.close,"close")}</td>
+        <td><span class="badge up">${fmt(x.perf_1m,"perf_1m")}</span></td>
+        <td>${fmt(x.value)}</td>
+      </tr>`;
+    }).join("");
+    // 未歸類的把新聞標題攤出來,方便自己判斷是什麼在帶
+    const news = g.theme==="未歸類"
+      ? `<div class="th-news">關鍵字比對不到題材,以下是這些個股的新聞標題:<br>`
+        + list.slice(0,6).map(x=>`· <b>${x.name}</b> ${(x.news||[])[0]||"(無新聞)"}`).join("<br>")
+        + `</div>`
+      : "";
+    return `<div class="th-group">
+      <div class="th-head">
+        <span class="th-name">${g.theme}</span>
+        <span class="th-stat"><b>${g.count}</b> 檔</span>
+        <span class="th-stat">成交值 <b>${g.value.toFixed(0)}</b> 億</span>
+        <span class="th-stat">平均 <b>+${g.perf.toFixed(0)}%</b></span>
+      </div>
+      <table><tbody>${rows}</tbody></table>${news}</div>`;
+  }).join("");
+
+  $("themes-panel").querySelectorAll("tr[data-url]").forEach(tr=>{
+    tr.onclick = ()=>window.open(tr.dataset.url,"_blank");
+  });
+}
+
 function renderBreadth(){
   const us = tab==="usbreadth";
   const b = (us ? DATA.usbreadth : DATA.breadth) || [];
@@ -435,7 +503,7 @@ document.querySelectorAll(".tab").forEach(b=>{
     $("rsmin").disabled = tab!=="sepa";
     $("mkt").disabled = isUS();
     // 廣度看的是整個市場的統計,個股搜尋/市場別在那一頁沒有意義
-    document.querySelector(".controls").hidden = tab==="breadth" || tab==="usbreadth";
+    document.querySelector(".controls").hidden = tab==="breadth" || tab==="usbreadth" || tab==="themes";
     if(tab==="daily") sortKey="chg_pct";
     else if(tab==="momentum" || tab==="us") sortKey="perf_1m";
     else sortKey="rs";
@@ -454,6 +522,7 @@ fetch("./data/latest.json")
     $("cnt-sepa").textContent = d.sepa.length;
     $("cnt-daily").textContent = d.daily.length;
     $("cnt-momentum").textContent = (d.momentum||[]).length;
+    $("cnt-themes").textContent = (d.themes||[]).length;
     render();
   })
   .catch(()=>{

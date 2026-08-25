@@ -571,8 +571,23 @@ def daily_update():
         shares = load_shares()
     picks = momentum_screen(merged, shares)
     breadth = update_breadth(merged, shares)
-    result["momentum"] = [{k: (None if pd.isna(v) else v) for k, v in r.items()}
-                          for r in picks.to_dict("records")]
+    recs = [{k: (None if pd.isna(v) else v) for k, v in r.items()}
+            for r in picks.to_dict("records")]
+
+    # 從新聞標題判斷題材。純關鍵字比對, 抓不到就留白 —— 標題會一起輸出,
+    # 歸不了類時可以直接翻。失敗不影響前面算好的東西。
+    try:
+        try:
+            import themes            # 直接跑 python scripts/update_data.py
+        except ModuleNotFoundError:
+            from scripts import themes   # 被當成套件匯入(測試/其他腳本)
+        themes.annotate(recs)
+        result["themes"] = themes.summarize(recs)
+    except Exception as e:
+        print(f"題材判斷失敗({e.__class__.__name__}),略過。")
+        result["themes"] = []
+
+    result["momentum"] = recs
     result["breadth"] = breadth.tail(120).to_dict("records")
 
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
