@@ -33,7 +33,7 @@
 scripts/update_data.py      個股資料管線(抓取、累積歷史、計算、輸出 JSON)
 scripts/txo_gex.py          TXO GEX 位階管線(抓取、計算、輸出 JSON)
 scripts/validate_gex.py     GEX 位階的預測力驗證(可重跑,結論見上方實測結果)
-scripts/probe_taifex.py     期交所資料發布時間探測(排程訂好後可刪)
+scripts/probe_taifex.py     期交所資料發布時間探測(手動用,結果已寫在檔案開頭)
 .github/workflows/daily.yml 每日排程(兩條管線都跑,互不阻擋)
 docs/index.html             前端頁面
 docs/data/latest.json       個股計算結果(自動產生)
