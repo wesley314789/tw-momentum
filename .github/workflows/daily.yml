@@ -59,5 +59,21 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add data/theme_overrides.csv data/history.csv.gz docs/data/latest.json data/gex_history.csv docs/data/gex_latest.json data/shares.csv data/breadth.csv data/us_breadth.csv docs/data/us_latest.json
-          git diff --cached --quiet || git commit -m "data: $(date +%F)"
-          git push
+          if git diff --cached --quiet; then
+            echo "沒有變更,不需要 commit。"
+            exit 0
+          fi
+          git commit -m "data: $(date +%F)"
+          # 推之前先 rebase。排程的 Claude 題材任務也會推同一個 repo(而且時間
+          # 就在早班前後), 只要它在我們 checkout 之後推了東西, 直接 push 就會
+          # 被拒絕而整批資料丟失 —— 2026-08-26 就是這樣掉了一天的個股資料。
+          for i in 1 2 3; do
+            if git pull --rebase -q && git push; then
+              echo "推送成功(第 $i 次嘗試)"
+              exit 0
+            fi
+            echo "推送失敗,10 秒後重試 ($i/3)"
+            sleep 10
+          done
+          echo "重試三次仍失敗。"
+          exit 1
