@@ -521,44 +521,72 @@ def compute(hist: pd.DataFrame, idx_hist: pd.DataFrame | None = None) -> dict:
 
 # ---------------------------------------------------------------- main
 
-def daily_update():
-    # runner 是 UTC。台灣交易日在台北 13:30 收盤(= UTC 05:30), 而 UTC 日期要到
-    # UTC 00:00(台北 08:00)才跳日, 因此 UTC 06:00~23:59 之間 today() 都等於
-    # 「最近一個收完的交易日」。兩班排程(台北 14:30 / 07:00)都落在這個區間內。
-    today = date.today()
-    twse, index_close = fetch_twse_date(today)
-    tpex = fetch_tpex_date(today)
+RECENT_DAYS = 6      # 每次往回檢查幾個日曆日, 補上缺漏的交易日
 
-    # 兩邊都要有資料才寫入。收盤後不久跑時, 證交所與櫃買的發布時間不見得同步,
-    # 只擋「兩邊都空」的話會把只有半個市場的資料寫進歷史 —— 那天的 RS 百分位
-    # 和全市場檔數都會失真, 而且會一直留在滾動視窗裡。缺的那次跳過就好, 下一班
-    # 會用同一個 today 重抓補上。
+
+def fetch_day(d: date):
+    """
+    抓單一交易日。兩個市場都要有資料才算數 —— 收盤後不久跑時證交所與櫃買的
+    發布時間不見得同步, 只擋「兩邊都空」的話會把半個市場寫進歷史, 那天的 RS
+    百分位和全市場檔數都會失真, 而且會一直留在滾動視窗裡。
+    """
+    twse, index_close = fetch_twse_date(d)
+    tpex = fetch_tpex_date(d)
     if twse.empty and tpex.empty:
-        print("今日無資料(假日?),跳過。")
-        return False
+        return None, None            # 假日或尚未開盤
     if twse.empty or tpex.empty:
-        missing = "證交所" if twse.empty else "櫃買中心"
-        print(f"{missing}尚未發布當日資料,跳過這次(避免寫入半個市場)。")
+        who = "證交所" if twse.empty else "櫃買中心"
+        print(f"  {d} {who}資料不完整,略過(避免寫入半個市場)。")
+        return None, None
+    return pd.concat([twse, tpex], ignore_index=True), index_close
+
+
+def daily_update():
+    """
+    補上最近 RECENT_DAYS 天內所有還沒進歷史的交易日, 不是只抓「今天」。
+
+    排程並不可靠:GitHub 會延遲(實測中位數 48 分、最長近三小時)甚至整班跳過。
+    只抓今天的話, 任何一次沒跑成的日子就永久缺漏 —— 2026-08-27 就是這樣:
+    14:30 那班被跳過, 而前一班延遲五小時後跨過 UTC 午夜, date.today() 已經
+    變成隔天, 於是連原本要補的日子也一起錯過。改成掃區間就不受排程時間影響。
+    """
+    hist = load_history()
+    have = set(hist["date"].unique())
+    today = date.today()
+    targets = [today - timedelta(days=i) for i in range(RECENT_DAYS)]
+    targets = [d for d in targets
+               if d.weekday() < 5 and d.isoformat() not in have]
+
+    frames, idx_rows = [], []
+    for d in sorted(targets):
+        df, index_close = fetch_day(d)
+        if df is None:
+            continue
+        frames.append(df)
+        if index_close is not None:
+            idx_rows.append({"date": d.isoformat(), "close": index_close})
+        print(f"  {d} 補上 {len(df)} 檔")
+
+    if not frames:
+        print("沒有需要補的交易日(資料已是最新)。")
         return False
 
-    today_df = pd.concat([twse, tpex], ignore_index=True)
-
-    hist = load_history()
-    # 名稱/市場別以最新資料為準,回填舊資料
-    name_map = today_df.set_index("code")[["name", "market"]]
-    hist = hist[hist["date"] != today_df["date"].iloc[0]]
-    merged = pd.concat([hist, today_df], ignore_index=True)
+    new_df = pd.concat(frames, ignore_index=True)
+    # 名稱/市場別以最新一天為準,回填舊資料
+    latest_day = new_df["date"].max()
+    name_map = new_df[new_df["date"] == latest_day].set_index("code")[["name", "market"]]
+    name_map = name_map[~name_map.index.duplicated()]
+    merged = pd.concat([hist, new_df], ignore_index=True)
+    merged = merged.drop_duplicates(subset=["date", "code"], keep="last")
     merged["name"] = merged["code"].map(name_map["name"]).fillna(merged["name"])
     merged["market"] = merged["code"].map(name_map["market"]).fillna(merged["market"])
     merged = save_history(merged)
 
-    if index_close is not None:
+    if idx_rows:
         idx_hist = load_index_history()
-        idx_hist = idx_hist[idx_hist["date"] != today.isoformat()]
-        idx_hist = pd.concat([idx_hist, pd.DataFrame(
-            [{"date": today.isoformat(), "close": index_close}])],
-            ignore_index=True)
-        save_index_history(idx_hist)
+        new_idx = pd.DataFrame(idx_rows)
+        idx_hist = idx_hist[~idx_hist["date"].isin(new_idx["date"])]
+        save_index_history(pd.concat([idx_hist, new_idx], ignore_index=True))
 
     result = compute(merged)
 
