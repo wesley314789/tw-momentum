@@ -568,7 +568,14 @@ def daily_update():
         print(f"  {d} 補上 {len(df)} 檔")
 
     if not frames:
-        print("沒有需要補的交易日(資料已是最新)。")
+        # 「沒有缺口」和「有缺口但交易所還沒發布」是完全不同的狀況, 一定要分開
+        # 印。2026-08-28 那班在台北 14:25 跑, 兩個交易所都還沒出當日資料, 但
+        # 訊息寫「資料已是最新」, 看 log 會以為一切正常。
+        if targets:
+            print(f"缺 {', '.join(d.isoformat() for d in sorted(targets))},"
+                  f"但交易所尚未發布(或為休市日),這次沒補到。")
+        else:
+            print("沒有需要補的交易日(資料已是最新)。")
         return False
 
     new_df = pd.concat(frames, ignore_index=True)
