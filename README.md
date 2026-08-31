@@ -184,6 +184,57 @@ GEX 的符號採靜態假設:**造市商 long call / short put**(`net = oi_c - o
 
 還有一層:期交所只分自營商/投信/外資三類,**沒有獨立的「造市者」欄位**。自營商混著登記造市者與方向性自營交易,且只持有全市場約 1/3 部位 —— 連「造市商是誰」在公開資料裡都不乾淨。
 
+## 排程:為什麼不能只靠 GitHub
+
+**GitHub 的 `schedule` 不會照你寫的時間跑,而且會整班丟掉。** 這不是故障,是它對公開
+repo 的 best-effort 設計 —— 高負載時直接不執行,官方文件也這麼寫。
+
+實測本 repo 2026-07-21 ~ 08-31 共 30 個交易日的 schedule 觸發紀錄:
+
+| 期間 | 設定班數 | 實際執行 |
+|---|---|---|
+| 07-21 ~ 08-18 | 1 班 | 每天 1 班 |
+| 08-19 ~ 08-26 | **2 班** | 每天 1 班 |
+| 08-27 | 2 班 | 2 班(唯一一次) |
+| 08-28 | 2 班 | 1 班 |
+| 08-31 | **3 班** | **0 班** |
+
+開跑時間從 04:07 到 23:13 都出現過,跟 cron 寫的幾點幾乎無關;誤點中位數 48 分、
+最長 175 分。重點是**多排班數並不會增加當天跑到的機會** —— 它一天大概只放一班,
+加班次只是換一張同樣的樂透彩券,而 08-31 那天連一張都沒中。
+
+所以 cron 保留著當免費的備援,真正的觸發來源放在外部。
+
+### 設定外部觸發
+
+需要一組 GitHub token,**請自己產、自己貼,不要貼進任何對話或檔案裡**。
+
+1. GitHub → Settings → Developer settings → **Fine-grained personal access tokens** → Generate new token
+   - Repository access:**Only select repositories** → `tw-momentum`
+   - Permissions → Repository permissions → **Actions: Read and write**
+   - 到期日建議設一年,到期要記得換
+2. 到 [cron-job.org](https://cron-job.org)(免費)建立 Cronjob:
+   - URL:`https://api.github.com/repos/wesley314789/tw-momentum/actions/workflows/daily.yml/dispatches`
+   - Schedule:時區選 **Asia/Taipei**,週一至週五 **15:35** 和 **19:00** 各建一個
+   - Advanced → Request method:**POST**
+   - Headers:
+     - `Accept: application/vnd.github+json`
+     - `X-GitHub-Api-Version: 2022-11-28`
+     - `Authorization: Bearer <你的 token>`
+   - Body:`{"ref":"main"}`
+3. 成功的回應是 **HTTP 204 No Content**(沒有 body,這是正常的)。401 = token 錯,
+   403 = 權限沒給 Actions write,404 = repo 或 workflow 檔名不對。
+
+先用一行 curl 驗證再去設服務:
+
+```bash
+curl -i -X POST -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" -H "Authorization: Bearer YOUR_TOKEN" https://api.github.com/repos/wesley314789/tw-momentum/actions/workflows/daily.yml/dispatches -d '{"ref":"main"}'
+```
+
+**重複觸發是安全的。** `daily_update()` 是掃區間補洞,沒缺口就什麼都不寫;GEX 和
+美股那兩支也是冪等的。外部服務和 GitHub 自己的 cron 同一天都跑到,只是誰先誰後,
+不會寫壞資料,也不會產生重複的 commit(沒變更就直接 exit 0)。
+
 ## 資料來源
 
 - 上市個股 + 加權股價指數:證交所 `MI_INDEX`(免金鑰,逐交易日查詢,每日更新與歷史回補共用)
