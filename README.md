@@ -225,11 +225,23 @@ repo 的 best-effort 設計 —— 高負載時直接不執行,官方文件也�
 3. 成功的回應是 **HTTP 204 No Content**(沒有 body,這是正常的)。401 = token 錯,
    403 = 權限沒給 Actions write,404 = repo 或 workflow 檔名不對。
 
-先用一行 curl 驗證再去設服務:
+先用一行 curl 驗證再去設服務。**注意引號寫法跟 shell 有關** —— 用錯會拿到
+`400 Problems parsing JSON`(但那其實代表 token 是好的:認證過了才會進到解析 body
+這一步,順帶看回應標頭的 `X-RateLimit-Limit`,5000 是已認證、60 是沒認證)。
+
+bash / Git Bash / Linux:
 
 ```bash
 curl -i -X POST -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" -H "Authorization: Bearer YOUR_TOKEN" https://api.github.com/repos/wesley314789/tw-momentum/actions/workflows/daily.yml/dispatches -d '{"ref":"main"}'
 ```
+
+cmd.exe —— 不認單引號,雙引號要用反斜線跳脫:
+
+```bat
+curl -i -X POST -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" -H "Authorization: Bearer YOUR_TOKEN" https://api.github.com/repos/wesley314789/tw-momentum/actions/workflows/daily.yml/dispatches -d "{\"ref\":\"main\"}"
+```
+
+PowerShell —— 同上,而且開頭必須寫 `curl.exe`,否則會被 `Invoke-WebRequest` 的別名接走。
 
 **重複觸發是安全的。** `daily_update()` 是掃區間補洞,沒缺口就什麼都不寫;GEX 和
 美股那兩支也是冪等的。外部服務和 GitHub 自己的 cron 同一天都跑到,只是誰先誰後,
