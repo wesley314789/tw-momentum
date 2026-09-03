@@ -121,11 +121,26 @@ footer{max-width:1080px;margin:0 auto 40px;padding:0 24px;
 .br-stat{text-align:right}
 .br-stat .k{font-size:11px;color:var(--muted)}
 .br-stat .v{font-family:var(--mono);font-size:15px;font-weight:600}
-.br-chart{display:flex;align-items:flex-end;gap:2px;height:120px;
-  padding:10px 0 6px;border-bottom:1px solid var(--line);overflow-x:auto}
-.br-chart i{flex:1 0 4px;min-width:3px;background:var(--amber);opacity:.55;
+.br-chart{height:120px;padding:10px 0 6px;border-bottom:1px solid var(--line);
+  overflow-x:auto}
+/* 長條與均線畫在同一個 .br-plot 裡, 均線用絕對定位疊上去。均線不能直接掛在
+   .br-chart 上 —— 那是捲動容器, 絕對定位的子元素不會跟著內容捲動, 一旦長條
+   總寬超過畫面, 線就會跟長條錯開。 */
+.br-plot{position:relative;display:flex;align-items:flex-end;gap:2px;
+  height:100%;min-width:100%}
+.br-plot i{flex:1 0 4px;min-width:3px;background:var(--amber);opacity:.55;
   border-radius:1px 1px 0 0;transition:opacity .1s}
-.br-chart i:hover{opacity:1}
+.br-plot i:hover{opacity:1}
+.br-ma{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;
+  overflow:visible}
+/* viewBox 是 0 0 N 100 再被拉伸成實際尺寸, 不加 non-scaling-stroke 的話線寬
+   會跟著 x/y 不等比縮放而變形 */
+.br-ma polyline{fill:none;stroke:var(--blue,#4c8dff);stroke-width:1.6;
+  stroke-linejoin:round;vector-effect:non-scaling-stroke}
+.br-legend{display:flex;gap:14px;align-items:center;margin-top:6px;
+  font-size:11px;color:var(--muted)}
+.br-legend s{display:inline-block;width:14px;height:2px;text-decoration:none;
+  vertical-align:middle;margin-right:5px}
 .br-table{margin-top:14px}
 .br-table th:first-child,.br-table td:first-child{text-align:left}
 .br-bar{display:inline-block;height:6px;border-radius:3px;background:var(--amber);
@@ -241,8 +256,9 @@ footer{max-width:1080px;margin:0 auto 40px;padding:0 24px;
       <div class="br-stats" id="br-stats"></div>
     </div>
     <div class="br-chart" id="br-chart"></div>
+    <div class="br-legend" id="br-legend"></div>
     <table class="br-table">
-      <thead><tr><th>日期</th><th>通過檔數</th><th>佔全市場</th><th>對前日</th><th></th></tr></thead>
+      <thead><tr><th>日期</th><th>通過檔數</th><th>佔全市場</th><th>對前日</th><th>20MA</th><th></th></tr></thead>
       <tbody id="br-tbody"></tbody>
     </table>
   </section>
@@ -462,6 +478,21 @@ function renderThemes(){
   });
 }
 
+const MA_N = 20;
+
+// 20 日移動平均。前 19 天窗口不完整, 回 null 讓線從第 20 天才開始 —— 用
+// 不足 20 天的平均去補會在起點畫出一段假的平滑曲線。
+function movingAvg(v, n = MA_N){
+  const out = [];
+  let sum = 0;
+  for(let i = 0; i < v.length; i++){
+    sum += v[i];
+    if(i >= n) sum -= v[i - n];
+    out.push(i >= n - 1 ? sum / n : null);
+  }
+  return out;
+}
+
 function renderBreadth(){
   const us = tab==="usbreadth";
   const b = (us ? DATA.usbreadth : DATA.breadth) || [];
@@ -474,10 +505,11 @@ function renderBreadth(){
     $("br-chart").innerHTML = ""; $("br-tbody").innerHTML = ""; $("br-stats").innerHTML = "";
     return;
   }
-  const last = b[b.length-1], prev = b.length>1 ? b[b.length-2] : null;
+  const last = b[b.length-1];
   const counts = b.map(x=>x.count);
   const max = Math.max(...counts, 1);
-  const avg20 = counts.slice(-20).reduce((s,v)=>s+v,0) / Math.min(20, counts.length);
+  const ma = movingAvg(counts);
+  const maNow = ma[ma.length-1];
 
   $("br-now").innerHTML = `${last.count}<small>${unit}${last.universe} 檔${us?"":"全市場"}</small>`;
   $("br-sub").textContent =
@@ -485,26 +517,49 @@ function renderBreadth(){
     + (us ? " · 市值 > $5 億的美股" : "")
     + " · 通過動能篩選的檔數;數字擴張代表漲勢全面,萎縮代表集中在少數股";
   $("br-stats").innerHTML = [
-    ["20 日均", avg20.toFixed(0)],
+    // 當日對 20MA 的位置比單看當日更有意義:站上代表擴張還在延續
+    ["20 日均", maNow==null ? "—" : maNow.toFixed(0)],
+    ["對 20 日均", maNow==null ? "—" : (last.count>=maNow?"+":"") + (last.count-maNow).toFixed(0)],
     ["區間最高", Math.max(...counts)],
     ["區間最低", Math.min(...counts)],
     ["樣本天數", b.length],
   ].map(([k,v])=>`<div class="br-stat"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
 
-  $("br-chart").innerHTML = b.map(x=>
-    `<i style="height:${Math.max(2, x.count/max*100)}%" title="${x.date}: ${x.count} 檔 (${x.pct.toFixed(1)}%)"></i>`
-  ).join("");
+  const bars = b.map((x,i)=>{
+    const m = ma[i]==null ? "" : ` · 20MA ${ma[i].toFixed(0)}`;
+    return `<i style="height:${Math.max(2, x.count/max*100)}%" `
+         + `title="${x.date}: ${x.count} 檔 (${x.pct.toFixed(1)}%)${m}"></i>`;
+  }).join("");
+
+  // viewBox 的 x 用「第幾根長條」, y 用 0~100 的百分比, 再靠
+  // preserveAspectRatio="none" 拉伸到實際尺寸, 這樣不必知道容器的像素寬高。
+  // x 取 i+0.5 對準長條中心。
+  const pts = ma.map((v,i)=> v==null ? null : `${i+0.5},${(100 - v/max*100).toFixed(2)}`)
+                .filter(Boolean).join(" ");
+  const line = pts
+    ? `<svg class="br-ma" viewBox="0 0 ${b.length} 100" preserveAspectRatio="none">
+         <polyline points="${pts}"></polyline></svg>`
+    : "";
+
+  $("br-chart").innerHTML = `<div class="br-plot">${bars}${line}</div>`;
+  $("br-legend").innerHTML =
+    `<span><s style="background:var(--amber);opacity:.55"></s>每日通過檔數</span>`
+    + `<span><s style="background:var(--blue,#4c8dff)"></s>20 日移動平均</span>`
+    + (ma[ma.length-1]==null
+        ? `<span>(資料不足 ${MA_N} 天,尚未畫出均線)</span>` : "");
 
   $("br-tbody").innerHTML = b.slice().reverse().map((x,i,arr)=>{
     const nx = arr[i+1];                      // 反轉後,下一筆才是前一天
     const d = nx ? x.count - nx.count : null;
     const cls = d==null ? "flat" : d>0 ? "up" : d<0 ? "down" : "flat";
     const dz = d==null ? "—" : (d>0?"+":"")+d;
+    const m = ma[b.length-1-i];
     return `<tr>
       <td>${x.date}</td>
       <td>${x.count}</td>
       <td>${x.pct.toFixed(2)}%</td>
       <td class="${cls}">${dz}</td>
+      <td class="ma">${m==null ? "—" : m.toFixed(0)}</td>
       <td><span class="br-bar" style="width:${x.count/max*140}px"></span></td>
     </tr>`;
   }).join("");
