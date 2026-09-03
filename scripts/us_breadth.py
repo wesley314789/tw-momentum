@@ -23,6 +23,7 @@ us_breadth.py — 美股版動能篩選與市場廣度
 """
 import argparse
 import datetime as dt
+import re
 import json
 import sys
 import time
@@ -48,6 +49,25 @@ PERF_DAYS = 21        # 「一個月」取 21 個交易日
 SMA_LONG = 200
 WORKERS = 4           # 併發數。Yahoo 沒有公開額度, 保守一點
 KEEP_DAYS = 280
+
+
+# Nasdaq 的 name 欄位帶著一長串證券類別樣板("Class A Common Stock"、"Ordinary
+# Shares"、"American Depositary Shares"…), 對顯示和搜尋都是雜訊。原本直接切
+# 前 40 字, 結果是把名字切在字中間 —— "Palantir Technologies Commo"、
+# "Iovance Biotherapeutics, Inc. Common Sto" —— 網站上顯示難看, 拿去查新聞更
+# 是查不到(精確片語比對不到半個殘缺字)。改成把樣板整段拿掉, 留完整公司名。
+SEC_TYPE = re.compile(
+    r"[,\s]*\b(class\s+[a-c]\b|series\s+[a-z]\b|"
+    r"common\s+stock|common\s+shares?|ordinary\s+shares?|"
+    r"subordinate\s+voting\s+shares?|"
+    r"american\s+depositary\s+shares?|depositary\s+shares?|"
+    r"perpetual\b|units?\b|warrants?\b|ads\b|adr\b).*$", re.I)
+
+
+def clean_name(name: str) -> str:
+    n = SEC_TYPE.sub("", (name or "").strip())
+    n = re.sub(r"\s+", " ", n).strip(" ,.")
+    return (n or (name or ""))[:60]
 
 
 def fetch_universe() -> pd.DataFrame:
@@ -154,7 +174,7 @@ def screen(arrs: dict, uni: pd.DataFrame, as_of: int | None = None) -> pd.DataFr
                 and turnover > MIN_TURNOVER
                 and perf > MIN_PERF):
             continue
-        rows.append({"symbol": sym, "name": (nm.get(sym) or "")[:40],
+        rows.append({"symbol": sym, "name": clean_name(nm.get(sym)),
                      "close": round(float(close), 2),
                      "perf_1m": round(float(perf), 1),
                      "turnover": round(turnover / 1e6, 1),
@@ -223,12 +243,30 @@ def main():
             print(f"  廣度回補 {i}/{len(days)} ({d}: {len(p)} 檔)", flush=True)
     breadth = save_breadth(pd.DataFrame(rows))
 
+    recs = picks.drop(columns=["date"]).to_dict("records")
+
+    # 題材標註。跟台股一樣不讓它拖垮主流程 —— Google News 掛掉或格式變了,
+    # 廣度數字還是要照樣產出。
+    groups = []
+    try:
+        try:
+            import us_themes
+        except ModuleNotFoundError:
+            from scripts import us_themes
+        us_themes.annotate(recs)
+        groups = us_themes.summarize(recs)
+        named = sum(1 for r in recs if r.get("theme"))
+        print(f"  題材: {named}/{len(recs)} 檔已歸類, {len(groups)} 組")
+    except Exception as e:
+        print(f"  題材判斷失敗({e.__class__.__name__}),略過。")
+
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT_PATH.write_text(json.dumps({
         "updated": dt.datetime.now().strftime("%Y-%m-%d %H:%M"),
         "trade_date": picks.date.mode()[0] if len(picks) else None,
         "universe": len(bars),
-        "picks": picks.drop(columns=["date"]).to_dict("records"),
+        "picks": recs,
+        "themes": groups,
         "breadth": breadth.tail(120).to_dict("records"),
     }, ensure_ascii=False, allow_nan=False), encoding="utf-8")
 

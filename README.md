@@ -184,6 +184,65 @@ GEX 的符號採靜態假設:**造市商 long call / short put**(`net = oi_c - o
 
 還有一層:期交所只分自營商/投信/外資三類,**沒有獨立的「造市者」欄位**。自營商混著登記造市者與方向性自營交易,且只持有全市場約 1/3 部位 —— 連「造市商是誰」在公開資料裡都不乾淨。
 
+## 美股族群題材
+
+跟台股 `themes.py` 共用同一套引擎(抓 Google News、依「有幾則不同新聞提到」計分、
+人工覆寫優先), 但**兩邊的分工剛好相反**, 因為關鍵字在美股幾乎不管用。
+
+### 為什麼美股不能只靠關鍵字
+
+把 2026-09-01 的 219 檔動能股標題做詞頻統計, 出現在最多檔的詞是:
+
+```
+stocktitan.net:176  earnings:142  gurufocus:101  simplywall.st:81
+estimates:75  sells:72  quiver quantitative:68  insider:...  fair value:32
+```
+
+**前 70 名裡一個題材詞都沒有** —— gold、bitcoin、AI 全部排不進來。台股的標題
+是題材密集的(CPO、磷化銦、散熱、軍工), 美股的 RSS 則被財經內容農場洗版。
+
+實測純關鍵字只歸出 35%, 而且**成交值最大的名字幾乎全部落在未歸類**:SNDK、
+CRM、PLTR、NOW、LITE、MRNA、HOOD、SHOP…。所以美股這邊:
+
+* **`data/us_theme_overrides.csv`(人工/LLM 研究)是主力** —— 大型股靠它
+* **關鍵字是補位** —— 抓那些新聞本來就很直白的中小型股(礦業、生技解盲)
+
+合起來 **72% 檔數 / 98% 成交值**已歸類。前端在覆寫來源的個股名稱後面標一個 `●`。
+
+### 兩個踩過的坑
+
+**股票代號會撞到題材關鍵字。** Hudbay Minerals 的代號就是 `HBM`, 12 則標題全部
+命中「記憶體 HBM」, 一檔銅礦公司被歸成記憶體股。比對前必須把代號從標題拿掉,
+短代號(P、U、DC、AG、OR、IT、GO)尤其危險。
+
+**媒體名也算內容。** Google News 標題結尾固定是「標題 - 媒體名」, AbCellera(生技)
+被判成加密貨幣, 只因為其中幾則的來源叫 `CryptoRank`。
+
+### RSS 摘要沒有用
+
+原本想「不要只看標題」而去吃 RSS 的 `<description>`。實測 3066 則摘要, 平均 13.7
+個詞, 其中**標題沒有的只有 1.0 個(7%)** —— 摘要基本上就是標題重複一次再接媒體名。
+沒有新資訊, 反而讓媒體名多命中一次, 所以關掉了。要拿到標題以外的東西只能抓文章
+本文, 那正是覆寫檔那條路在做的事。
+
+### 2026-08 這波的實際題材
+
+| 題材 | 檔數 | 帶動原因 |
+|---|---|---|
+| Enterprise software | 39 | Salesforce 財報帶頭, 「SaaSpocalypse」敘事反轉, 資金從「花錢建 AI」轉向「用 AI 賺錢」 |
+| Gold & silver | 28 | 金破 $4,400、銀觸 $70;美國財政部加倍長債回購點燃財政恐慌交易, 全產業 AISC < $2,000/oz |
+| Biotech readout | 12 | 8/19 Moderna + Merck 的個人化 mRNA 癌症疫苗三期解盲成功(史上第一次), 單日 +177% |
+| Crypto/digital assets | 5 | 比特幣 8 月 $60k → $80k;SEC 把 payment stablecoin 獨立分類 |
+| Memory/NAND | 1 | AI 推論吃儲存, NAND 報價單季 +75~100%;SNDK 上半年 +726% 為 S&P 500 第一名 |
+
+### 附帶修掉的 bug
+
+Nasdaq 的 `name` 欄位原本被直接切前 40 字, 切在字中間 —— `Palantir Technologies
+Commo`、`Iovance Biotherapeutics, Inc. Common Sto`。網站上顯示難看, 拿去查新聞
+更是查不到(精確片語比對不到殘缺字, 219 檔裡有 45 檔抓不到任何新聞)。改成用
+`clean_name()` 把證券類別樣板("Class A Common Stock"、"Ordinary Shares"、
+"American Depositary Shares")整段拿掉, 留完整公司名。
+
 ## 排程:為什麼不能只靠 GitHub
 
 **GitHub 的 `schedule` 不會照你寫的時間跑,而且會整班丟掉。** 這不是故障,是它對公開

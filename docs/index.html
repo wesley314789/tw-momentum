@@ -132,6 +132,7 @@ footer{max-width:1080px;margin:0 auto 40px;padding:0 24px;
   opacity:.5;vertical-align:middle}
 
 /* 族群題材 */
+.src{color:#4c8dff;margin-left:4px;font-size:10px;vertical-align:super}
 .th-wrap{display:flex;flex-direction:column;gap:14px;padding:14px 0}
 .th-group{background:var(--surface);border:1px solid var(--line);
   border-radius:10px;overflow:hidden}
@@ -175,6 +176,7 @@ footer{max-width:1080px;margin:0 auto 40px;padding:0 24px;
     <button class="tab" role="tab" data-tab="themes">族群題材<span class="count" id="cnt-themes"></span></button>
     <button class="tab" role="tab" data-tab="breadth">市場廣度</button>
     <button class="tab" role="tab" data-tab="us">美股動能<span class="count" id="cnt-us"></span></button>
+    <button class="tab" role="tab" data-tab="usthemes">美股題材<span class="count" id="cnt-usthemes"></span></button>
     <button class="tab" role="tab" data-tab="usbreadth">美股廣度</button>
   </div>
 </header>
@@ -289,7 +291,7 @@ let sortKey = "rs", sortDir = -1;
 
 const $ = id => document.getElementById(id);
 const cols = () => tab==="us" ? COLS_US : tab==="momentum" ? COLS_MOMENTUM : COLS;
-const isUS = () => tab==="us" || tab==="usbreadth";
+const isUS = () => tab==="us" || tab==="usbreadth" || tab==="usthemes";
 const fmt = (v,k)=>{
   if(v==null) return "—";
   if(k==="chg_pct") return (v>0?"+":"")+v.toFixed(2)+"%";
@@ -335,7 +337,7 @@ function rows(){
 
 function render(){
   const isBreadth = tab==="breadth" || tab==="usbreadth";
-  const isThemes = tab==="themes";
+  const isThemes = tab==="themes" || tab==="usthemes";
   $("breadth-panel").hidden = !isBreadth;
   $("themes-panel").hidden = !isThemes;
   $("stock-table").hidden = isBreadth || isThemes;
@@ -403,40 +405,53 @@ function render(){
 }
 
 function renderThemes(){
-  const groups = DATA.themes || [];
+  const us = tab==="usthemes";
+  const groups = (us ? (DATA.us_meta||{}).themes : DATA.themes) || [];
+  const picks  = (us ? DATA.us : DATA.momentum) || [];
   if(!groups.length){
-    $("themes-panel").innerHTML =
-      `<div class="empty">尚無族群資料 — 題材由新聞標題關鍵字判斷,需執行 update_data.py</div>`;
+    $("themes-panel").innerHTML = `<div class="empty">${us
+      ? "尚無美股族群資料 — 需執行 python scripts/us_breadth.py"
+      : "尚無族群資料 — 題材由新聞標題關鍵字判斷,需執行 update_data.py"}</div>`;
     return;
   }
   const byTheme = {};
-  (DATA.momentum||[]).forEach(x=>{
-    (byTheme[x.theme || "未歸類"] ||= []).push(x);
-  });
+  picks.forEach(x=>{ (byTheme[x.theme || "未歸類"] ||= []).push(x); });
 
   $("themes-panel").innerHTML = groups.map(g=>{
     const list = (byTheme[g.theme]||[]).slice().sort((a,b)=>b.perf_1m-a.perf_1m);
     const rows = list.map(x=>{
+      // 覆寫來的題材(人工/LLM 研究)標一個點,跟關鍵字猜的區分開
+      const src = x.theme_src==="override" ? `<span class="src" title="人工/研究標註">●</span>` : "";
+      if(us){
+        return `<tr data-url="https://finance.yahoo.com/quote/${x.symbol}">
+          <td>${x.symbol}</td>
+          <td class="name">${x.name}${src}</td>
+          <td>${fmt(x.close,"close")}</td>
+          <td><span class="badge up">${fmt(x.perf_1m,"perf_1m")}</span></td>
+          <td>$${(x.turnover||0).toFixed(0)}M</td>
+        </tr>`;
+      }
       const flags = (x.flags||[]).map(f=>`<span class="flag">${f}</span>`).join("");
       return `<tr data-url="https://tw.stock.yahoo.com/quote/${x.code}${x.market==="上櫃"?".TWO":".TW"}">
         <td>${x.code}</td>
-        <td class="name">${x.name}${flags}</td>
+        <td class="name">${x.name}${flags}${src}</td>
         <td>${fmt(x.close,"close")}</td>
         <td><span class="badge up">${fmt(x.perf_1m,"perf_1m")}</span></td>
         <td>${fmt(x.value)}</td>
       </tr>`;
     }).join("");
-    // 未歸類的把新聞標題攤出來,方便自己判斷是什麼在帶
     const news = g.theme==="未歸類"
       ? `<div class="th-news">關鍵字比對不到題材,以下是這些個股的新聞標題:<br>`
         + list.slice(0,6).map(x=>`· <b>${x.name}</b> ${(x.news||[])[0]||"(無新聞)"}`).join("<br>")
         + `</div>`
       : "";
+    const val = us ? `成交值 <b>$${g.value.toFixed(0)}</b>M`
+                   : `成交值 <b>${g.value.toFixed(0)}</b> 億`;
     return `<div class="th-group">
       <div class="th-head">
         <span class="th-name">${g.theme}</span>
         <span class="th-stat"><b>${g.count}</b> 檔</span>
-        <span class="th-stat">成交值 <b>${g.value.toFixed(0)}</b> 億</span>
+        <span class="th-stat">${val}</span>
         <span class="th-stat">平均 <b>+${g.perf.toFixed(0)}%</b></span>
       </div>
       <table><tbody>${rows}</tbody></table>${news}</div>`;
@@ -503,7 +518,8 @@ document.querySelectorAll(".tab").forEach(b=>{
     $("rsmin").disabled = tab!=="sepa";
     $("mkt").disabled = isUS();
     // 廣度看的是整個市場的統計,個股搜尋/市場別在那一頁沒有意義
-    document.querySelector(".controls").hidden = tab==="breadth" || tab==="usbreadth" || tab==="themes";
+    document.querySelector(".controls").hidden = tab==="breadth" || tab==="usbreadth"
+      || tab==="themes" || tab==="usthemes";
     if(tab==="daily") sortKey="chg_pct";
     else if(tab==="momentum" || tab==="us") sortKey="perf_1m";
     else sortKey="rs";
@@ -539,6 +555,7 @@ fetch("./data/us_latest.json")
     DATA.usbreadth = d.breadth || [];
     DATA.us_meta = d;
     $("cnt-us").textContent = DATA.us.length;
+    $("cnt-usthemes").textContent = (d.themes||[]).length;
     if(isUS()) render();
   })
   .catch(()=>{});

@@ -15,6 +15,7 @@ themes.py — 從新聞標題判斷個股的族群題材
 被列處置股/注意股會另外標記:那代表短期漲太兇被盯上, 是風險訊號而不是題材。
 """
 import csv
+import re
 import urllib.parse
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
@@ -103,26 +104,51 @@ FLAGS = {
 }
 
 
-def fetch_headlines(code: str, name: str) -> list[str]:
-    """抓單檔的新聞標題。失敗回空 list, 不讓單檔拖垮整批。"""
+def fetch_query(query: str, rss: str = RSS, max_items: int = MAX_ITEMS,
+                with_desc: bool = False) -> list[str]:
+    """
+    抓一組查詢字串的新聞標題。失敗回空 list, 不讓單檔拖垮整批。
+
+    with_desc=True 會把 RSS 的 <description> 摘要接在標題後面, 文字量大約多
+    一倍。台股預設關掉(標題本身題材密集就夠了, 而且 Google News 中文摘要多半
+    只是標題的重複); 美股打開, 因為它的標題噪音太大, 多一段內文才有東西可比。
+    """
     try:
-        q = urllib.parse.quote(f"{name} {code}")
-        r = requests.get(RSS.format(q), headers=HEADERS, timeout=20)
+        r = requests.get(rss.format(urllib.parse.quote(query)),
+                         headers=HEADERS, timeout=20)
         r.raise_for_status()
-        items = ET.fromstring(r.content).findall(".//item")[:MAX_ITEMS]
-        return [(it.find("title").text or "").strip() for it in items]
+        items = ET.fromstring(r.content).findall(".//item")[:max_items]
+        out = []
+        for it in items:
+            t = (it.find("title").text or "").strip()
+            if with_desc:
+                d = it.find("description")
+                if d is not None and d.text:
+                    txt = re.sub(r"<[^>]+>", " ", d.text)
+                    t += " " + " ".join(txt.split())[:200]
+            out.append(t)
+        return out
     except Exception:
         return []
 
 
+def fetch_headlines(code: str, name: str) -> list[str]:
+    """台股單檔:用「名稱 代號」查。"""
+    return fetch_query(f"{name} {code}")
+
+
+def fetch_many(queries: dict, rss: str = RSS, max_items: int = MAX_ITEMS,
+               workers: int = WORKERS, with_desc: bool = False) -> dict:
+    """queries = {key: 查詢字串} -> {key: [標題, ...]}。台股美股共用。"""
+    keys = list(queries)
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        heads = ex.map(lambda k: fetch_query(queries[k], rss, max_items, with_desc), keys)
+        return dict(zip(keys, heads))
+
+
 def fetch_all(stocks: list[tuple]) -> dict:
     """stocks = [(code, name), ...] -> {code: [標題, ...]}"""
-    out = {}
-    with ThreadPoolExecutor(max_workers=WORKERS) as ex:
-        for (code, _), heads in zip(
-                stocks, ex.map(lambda s: fetch_headlines(*s), stocks)):
-            out[code] = heads
-    return out
+    return fetch_many({c: f"{n} {c}" for c, n in stocks})
 
 
 def strip_name(headlines: list[str], name: str) -> list[str]:
@@ -144,33 +170,63 @@ def strip_name(headlines: list[str], name: str) -> list[str]:
     return out
 
 
-def classify(headlines: list[str], name: str = "") -> tuple[str | None, list[str]]:
+def compile_lexicon(themes: dict, boundary: bool = False) -> dict:
     """
-    回傳 (題材, 旗標)。分數是「有幾則不同的新聞提到這個題材」, 不是關鍵字
-    總出現次數 —— 否則一則標題塞滿同義詞就能決定結果。不足 MIN_HITS 就回
-    None, 寧可留白讓人翻標題, 也不硬歸類。
+    把關鍵字表編成正則。boundary=True 用於英文 —— 中文沒有詞界, 直接子字串
+    比對即可; 英文不加 \b 的話 "ai" 會命中 "said"、"EV" 會命中 "seven"。
+    字尾加 `*` 表示前綴比對(crypto* 也吃 cryptocurrency)。
     """
-    scored = strip_name(headlines, name) if name else headlines
+    out = {}
+    for theme, words in themes.items():
+        pats = []
+        for w in words:
+            prefix = w.endswith("*")
+            body = re.escape(w[:-1] if prefix else w)
+            if boundary:
+                body = r"\b" + body + ("" if prefix else r"\b")
+            pats.append(re.compile(body, re.I))
+        out[theme] = pats
+    return out
+
+
+def score(headlines: list[str], lex: dict, tie_break: dict,
+          min_hits: int = MIN_HITS) -> tuple[str | None, dict]:
+    """
+    回傳 (題材, 各題材得分)。分數是「有幾則不同的新聞提到這個題材」, 不是
+    關鍵字總出現次數 —— 否則一則標題塞滿同義詞就能決定結果。不足 min_hits
+    就回 None, 寧可留白讓人翻標題, 也不硬歸類。
+    """
     scores = {}
-    for theme, words in THEMES.items():
-        n = sum(1 for h in scored if any(w in h for w in words))
+    for theme, pats in lex.items():
+        n = sum(1 for h in headlines if any(p.search(h) for p in pats))
         if n:
             scores[theme] = n
-    blob = " ".join(scored)
-    flags = [f for f, words in FLAGS.items() if any(w in blob for w in words)]
     if not scores:
-        return None, flags
+        return None, scores
     theme, n = max(scores.items(),
-                   key=lambda kv: (kv[1], TIE_BREAK.get(kv[0], 0)))
-    return (theme if n >= MIN_HITS else None), flags
+                   key=lambda kv: (kv[1], tie_break.get(kv[0], 0)))
+    return (theme if n >= min_hits else None), scores
 
 
-def load_overrides() -> dict:
+_TW_LEX = compile_lexicon(THEMES)
+_FLAG_LEX = compile_lexicon(FLAGS)
+
+
+def classify(headlines: list[str], name: str = "") -> tuple[str | None, list[str]]:
+    """台股:去掉公司名後計分, 另外標出處置/注意股旗標。"""
+    scored = strip_name(headlines, name) if name else headlines
+    theme, _ = score(scored, _TW_LEX, TIE_BREAK)
+    blob = " ".join(scored)
+    flags = [f for f, pats in _FLAG_LEX.items() if any(p.search(blob) for p in pats)]
+    return theme, flags
+
+
+def load_overrides(path: Path = OVERRIDES_PATH) -> dict:
     """讀人工/排程研究出來的題材對照表。檔案不存在就當空的。"""
-    if not OVERRIDES_PATH.exists():
+    if not path.exists():
         return {}
     out = {}
-    with OVERRIDES_PATH.open(encoding="utf-8-sig", newline="") as f:
+    with path.open(encoding="utf-8-sig", newline="") as f:
         for row in csv.DictReader(f):
             code = (row.get("code") or "").strip()
             theme = (row.get("theme") or "").strip()
@@ -205,7 +261,7 @@ def annotate(picks: list[dict]) -> list[dict]:
     return picks
 
 
-def summarize(picks: list[dict]) -> list[dict]:
+def summarize(picks: list[dict], value_key: str = "value") -> list[dict]:
     """依題材彙總:檔數、成交值合計、平均漲幅。未歸類的單獨一組。"""
     groups = {}
     for p in picks:
@@ -214,7 +270,7 @@ def summarize(picks: list[dict]) -> list[dict]:
                                "count": 0, "value": 0.0, "perf": 0.0,
                                "names": []})
         g["count"] += 1
-        g["value"] += p.get("value") or 0
+        g["value"] += p.get(value_key) or 0
         g["perf"] += p.get("perf_1m") or 0
         g["names"].append(p["name"])
     out = []
