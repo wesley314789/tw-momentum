@@ -66,7 +66,7 @@ jobs:
           # 追加當天再丟棄 —— 大盤歷史會一天天缺漏, 而 RS 用它的 63/126/189/252
           # 日報酬當基準, 缺日會讓回看窗口整個偏移。它也是 rebase 前唯一的
           # 未暫存變更, 會擋住 pull。
-          git add data/theme_overrides.csv data/us_theme_overrides.csv data/history.csv.gz data/index.csv.gz docs/data/latest.json data/gex_history.csv docs/data/gex_latest.json data/shares.csv data/breadth.csv data/us_breadth.csv docs/data/us_latest.json
+          git add data/theme_overrides.csv data/us_theme_overrides.csv data/history.csv.gz data/index.csv.gz docs/data/latest.json data/gex_history.csv docs/data/gex_latest.json data/shares.csv data/breadth.csv data/momentum_members.csv.gz data/us_breadth.csv data/us_momentum_members.csv.gz docs/data/us_latest.json
           if git diff --cached --quiet; then
             echo "沒有變更,不需要 commit。"
             exit 0

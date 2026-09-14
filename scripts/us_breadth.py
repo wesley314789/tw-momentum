@@ -36,6 +36,8 @@ import requests
 
 ROOT = Path(__file__).resolve().parent.parent
 BREADTH_PATH = ROOT / "data" / "us_breadth.csv"
+# 每個交易日通過篩選的名單 —— 上榜天數與族群日增減都靠它
+
 OUTPUT_PATH = ROOT / "docs" / "data" / "us_latest.json"
 
 NASDAQ_URL = "https://api.nasdaq.com/api/screener/stocks"
@@ -208,6 +210,71 @@ def save_breadth(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+MEMBER_PATH = ROOT / "data" / "us_momentum_members.csv.gz"
+KEEP_MEMBER_DAYS = 280
+
+
+def load_members() -> pd.DataFrame:
+    if MEMBER_PATH.exists():
+        df = pd.read_csv(MEMBER_PATH, dtype={"date": str, "symbol": str})
+    else:
+        df = pd.DataFrame(columns=["date", "symbol", "theme"])
+    # 整欄空的時候 read_csv 會給 float64, 之後寫字串進去會 TypeError
+    df["theme"] = df["theme"].astype("object") if "theme" in df else None
+    return df
+
+
+def save_members(df: pd.DataFrame) -> pd.DataFrame:
+    MEMBER_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if "theme" not in df:
+        df = df.assign(theme=None)
+    df = df.copy()
+    df["theme"] = df["theme"].astype("object")
+    # 去重讓「有題材」的那筆贏, 否則回補的空題材會蓋掉當天標好的結果
+    df["_has"] = df["theme"].notna() & (df["theme"].astype(str) != "")
+    df = (df.sort_values(["date", "symbol", "_has"])
+            .drop_duplicates(subset=["date", "symbol"], keep="last")
+            .drop(columns="_has"))
+    keep = sorted(df["date"].unique())[-KEEP_MEMBER_DAYS:]
+    df = df[df["date"].isin(keep)].sort_values(["date", "symbol"])
+    df.to_csv(MEMBER_PATH, index=False, compression="gzip")
+    return df
+
+
+def streaks(members: pd.DataFrame, dates: list) -> dict:
+    """{symbol: (連續交易日數, 本段起算日, 累計天數)}。隔週末不算中斷。"""
+    if members.empty or not dates:
+        return {}
+    pos = {d: i for i, d in enumerate(dates)}
+    out = {}
+    for sym, g in members.groupby("symbol"):
+        idx = sorted({pos[d] for d in g["date"] if d in pos})
+        if not idx or idx[-1] != len(dates) - 1:
+            continue
+        run = 1
+        while run < len(idx) and idx[-run - 1] == idx[-1] - run:
+            run += 1
+        out[sym] = (run, dates[idx[-run]], len(idx))
+    return out
+
+
+def prev_theme_counts(members: pd.DataFrame, dates: list, today_theme: dict) -> dict:
+    """前一個交易日各題材的檔數。兩天用同一套標籤才比得準,理由同台股。"""
+    if members.empty or len(dates) < 2:
+        return {}
+    last = {}
+    for sym, g in members.groupby("symbol"):
+        k = g.sort_values("date")["theme"].dropna()
+        k = k[k != ""]
+        if len(k):
+            last[sym] = k.iloc[-1]
+    label = {**last, **{k: v for k, v in today_theme.items() if v}}
+    counts = {}
+    for sym in members[members["date"] == dates[-2]]["symbol"]:
+        t = label.get(sym) or "未歸類"
+        counts[t] = counts.get(t, 0) + 1
+    return counts
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--backfill", action="store_true",
@@ -225,6 +292,9 @@ def main():
     cal = trading_days(arrs)
     picks = screen(arrs, uni, cal[-1])
     rows = load_breadth().to_dict("records")
+    mem = load_members()
+    mem_rows = mem.to_dict("records")
+    have_mem = set(mem["date"])
 
     # 一年的資料扣掉 SMA200 的回看, 大約還能往回算 50 天
     have = {r["date"] for r in rows}
@@ -239,26 +309,60 @@ def main():
         p = screen(arrs, uni, o)
         rows.append({"date": d, "count": len(p), "universe": n_uni,
                      "pct": round(len(p) / n_uni * 100, 2)})
+        # 已經有名單的日子不重建 —— 名單由歷史價格決定、不會變, 重建只會把
+        # 那天標好的題材洗成空的
+        if len(p) and d not in have_mem:
+            mem_rows.extend({"date": d, "symbol": sym, "theme": None}
+                            for sym in p["symbol"])
         if args.backfill and i % 20 == 0:
             print(f"  廣度回補 {i}/{len(days)} ({d}: {len(p)} 檔)", flush=True)
     breadth = save_breadth(pd.DataFrame(rows))
+    members = save_members(pd.DataFrame(mem_rows))
 
     recs = picks.drop(columns=["date"]).to_dict("records")
 
     # 題材標註。跟台股一樣不讓它拖垮主流程 —— Google News 掛掉或格式變了,
     # 廣度數字還是要照樣產出。
     groups = []
+    us_themes_mod = None
     try:
         try:
             import us_themes
         except ModuleNotFoundError:
             from scripts import us_themes
+        us_themes_mod = us_themes
         us_themes.annotate(recs)
         groups = us_themes.summarize(recs)
         named = sum(1 for r in recs if r.get("theme"))
         print(f"  題材: {named}/{len(recs)} 檔已歸類, {len(groups)} 組")
     except Exception as e:
         print(f"  題材判斷失敗({e.__class__.__name__}),略過。")
+
+    # 上榜天數
+    mem_dates = sorted(members["date"].unique())
+    st = streaks(members, mem_dates)
+    today = mem_dates[-1] if mem_dates else None
+    for r in recs:
+        run, since, total = st.get(r["symbol"], (1, today, 1))
+        r["days"], r["since"], r["days_total"] = run, since, total
+
+    # 把今天判斷出來的題材寫回名單, 下次才有前一天的族群分布可比。
+    # 覆寫檔當後備 —— 昨天在榜、今天掉出去的個股今天不會被標註。
+    try:
+        ov = us_themes_mod.T.load_overrides(us_themes_mod.OVERRIDES_PATH)              if us_themes_mod else {}
+    except Exception:
+        ov = {}
+    today_theme = {**ov, **{r["symbol"]: r.get("theme") for r in recs if r.get("theme")}}
+    if mem_dates:
+        cur = members["date"] == today
+        members.loc[cur, "theme"] = members.loc[cur, "symbol"].map(today_theme)
+        members = save_members(members)
+
+    prev = prev_theme_counts(members, mem_dates, today_theme)
+    if prev:
+        for g in groups:
+            g["prev"] = prev.get(g["theme"], 0)
+            g["delta"] = g["count"] - g["prev"]
 
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT_PATH.write_text(json.dumps({
@@ -267,6 +371,7 @@ def main():
         "universe": len(bars),
         "picks": recs,
         "themes": groups,
+        "member_days": len(mem_dates),
         "breadth": breadth.tail(120).to_dict("records"),
     }, ensure_ascii=False, allow_nan=False), encoding="utf-8")
 

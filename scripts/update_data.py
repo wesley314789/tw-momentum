@@ -29,6 +29,9 @@ HISTORY_PATH = ROOT / "data" / "history.csv.gz"
 INDEX_PATH = ROOT / "data" / "index.csv.gz"
 SHARES_PATH = ROOT / "data" / "shares.csv"
 BREADTH_PATH = ROOT / "data" / "breadth.csv"
+# 每個交易日通過動能篩選的名單(date, code, theme)。廣度只存檔數, 這裡存
+# 是誰 —— 上榜天數和族群的日增減都要靠它。
+MEMBER_PATH = ROOT / "data" / "momentum_members.csv.gz"
 OUTPUT_PATH = ROOT / "docs" / "data" / "latest.json"
 KEEP_DAYS = 280  # 滾動保留的交易日數(> 252 即可算 52 週)
 
@@ -376,20 +379,24 @@ def save_breadth(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def update_breadth(hist: pd.DataFrame, shares: pd.DataFrame,
-                   backfill: bool = False) -> pd.DataFrame:
+                   backfill: bool = False) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
-    記錄每日通過動能篩選的檔數 —— 這就是市場廣度。
+    記錄每日通過動能篩選的檔數 —— 這就是市場廣度 —— 並把名單一起留下來。
 
     數字本身比名單更有用:同樣是大盤上漲, 通過的檔數在擴張還是萎縮, 代表漲勢
-    是全面的還是集中在少數幾檔。
+    是全面的還是集中在少數幾檔。名單則是拿來算上榜天數與族群的日增減 ——
+    這裡本來就逐日重跑過 momentum_screen 了, 順手留下來幾乎沒有額外成本。
     """
     br = load_breadth()
+    mem = load_members()
     have = set(br["date"])
     dates = sorted(hist["date"].unique())
     todo = dates[199:] if backfill else dates[-1:]   # 前 200 天算不出 SMA200
     todo = [d for d in todo if backfill or d not in have]
 
     rows = br.to_dict("records")
+    mem_rows = mem.to_dict("records")
+    have_mem = set(mem["date"])
     for i, d in enumerate(todo, 1):
         if d in have and not backfill:
             continue
@@ -398,10 +405,100 @@ def update_breadth(hist: pd.DataFrame, shares: pd.DataFrame,
         universe = int((hist["date"] == d).sum())
         rows.append({"date": d, "count": len(picks), "universe": universe,
                      "pct": round(len(picks) / universe * 100, 2) if universe else 0})
+        # 回補的日子沒有當天的新聞可查, theme 留空; 之後由當天的標註補上。
+        # 已經有名單的日子不重建 —— 名單本身是從歷史價格決定的、不會變,
+        # 重建只會把那天標好的題材洗成空的。
+        if len(picks) and d not in have_mem:
+            mem_rows.extend({"date": d, "code": c, "theme": None}
+                            for c in picks["code"])
         if backfill and i % 20 == 0:
             print(f"  廣度回補 {i}/{len(todo)} ({d}: {len(picks)} 檔)", flush=True)
-    return save_breadth(pd.DataFrame(rows))
+    return save_breadth(pd.DataFrame(rows)), save_members(pd.DataFrame(mem_rows))
 
+
+# ------------------------------------------------------- 上榜天數 / 族群增減
+
+def load_members() -> pd.DataFrame:
+    if MEMBER_PATH.exists():
+        df = pd.read_csv(MEMBER_PATH, dtype={"date": str, "code": str})
+    else:
+        df = pd.DataFrame(columns=["date", "code", "theme"])
+    # theme 整欄空的時候 read_csv 會給 float64, 之後寫字串進去會 TypeError。
+    # 明確轉成 object, 讓「還沒標註」和「標註過」共用同一個欄位型別。
+    df["theme"] = df["theme"].astype("object") if "theme" in df else None
+    return df
+
+
+def save_members(df: pd.DataFrame) -> pd.DataFrame:
+    MEMBER_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if "theme" not in df:
+        df = df.assign(theme=None)
+    # 每次都明確轉 object。整欄都是 None 時 pandas 會把它推成 float64
+    # (read_csv 讀空欄、或 DataFrame(records) 從全 None 的紀錄重建都會),
+    # 之後往裡面寫字串就 TypeError: Invalid value ... for dtype 'float64'。
+    df = df.copy()
+    df["theme"] = df["theme"].astype("object")
+    # 去重時讓「有題材」的那筆贏 —— 直接 keep="last" 的話, 回補產生的空題材
+    # 會蓋掉當天標註好的結果, 族群的日增減就永遠比不出來。
+    df["_has"] = df["theme"].notna() & (df["theme"].astype(str) != "")
+    df = (df.sort_values(["date", "code", "_has"])
+            .drop_duplicates(subset=["date", "code"], keep="last")
+            .drop(columns="_has"))
+    keep = sorted(df["date"].unique())[-KEEP_DAYS:]
+    df = df[df["date"].isin(keep)].sort_values(["date", "code"])
+    df.to_csv(MEMBER_PATH, index=False, compression="gzip")
+    return df
+
+
+def streaks(members: pd.DataFrame, dates: list[str]) -> dict:
+    """
+    每檔的上榜天數。回傳 {code: (連續天數, 本段起算日, 視窗內累計天數)}。
+
+    「連續」按**交易日**算而不是日曆天 —— 中間隔週末或連假不算中斷, 但只要有
+    一個交易日掉出名單, 連續就歸零重數。dates 必須是實際有資料的交易日序列。
+    """
+    if members.empty or not dates:
+        return {}
+    pos = {d: i for i, d in enumerate(dates)}
+    by_code = {}
+    for code, g in members.groupby("code"):
+        idx = sorted({pos[d] for d in g["date"] if d in pos})
+        if not idx or idx[-1] != len(dates) - 1:
+            continue                       # 今天不在榜上就不用算
+        run = 1
+        while run < len(idx) and idx[-run - 1] == idx[-1] - run:
+            run += 1
+        by_code[code] = (run, dates[idx[-run]], len(idx))
+    return by_code
+
+
+def theme_delta(members: pd.DataFrame, dates: list[str],
+                today_theme: dict) -> dict:
+    """
+    每個題材相對前一個交易日的檔數增減。
+
+    前一天的個股用**最後一次看到的題材**來歸類, 不是重跑一次當天的新聞 ——
+    昨天掉出名單的個股今天不會被標註, 沒有標籤可用; 而且要比較的是「這個族群
+    的檔數變多還是變少」, 兩天用同一套標籤才比得準。今天有標註的以今天為準,
+    這樣人工覆寫或題材改名會同時套用到兩邊, 不會憑空生出一組差值。
+    """
+    if members.empty or len(dates) < 2:
+        return {}
+    last = {}
+    for code, g in members.groupby("code"):
+        g = g.sort_values("date")
+        known = g["theme"].dropna()
+        known = known[known != ""]
+        if len(known):
+            last[code] = known.iloc[-1]
+    label = {**last, **{k: v for k, v in today_theme.items() if v}}
+
+    prev_day = dates[-2]
+    prev = members[members["date"] == prev_day]["code"]
+    counts = {}
+    for code in prev:
+        counts[label.get(code) or "未歸類"] = counts.get(label.get(code) or "未歸類", 0) + 1
+    return counts
 
 # ---------------------------------------------------------------- compute
 
@@ -635,7 +732,17 @@ def daily_update():
         idx_hist = idx_hist[~idx_hist["date"].isin(new_idx["date"])]
         save_index_history(pd.concat([idx_hist, new_idx], ignore_index=True))
 
-    result = compute(merged)
+    return enrich_and_write(merged)
+
+
+def enrich_and_write(merged: pd.DataFrame, idx_hist: pd.DataFrame | None = None):
+    """
+    在 compute() 的基礎上補上動能篩選、市場廣度、題材、上榜天數, 然後寫檔。
+
+    抽成獨立函式是為了讓 --recompute 走同一條路 —— 改了計算邏輯又還沒到下一個
+    交易日時, daily_update 會直接跳過(沒有缺口要補), 網站就看不到新欄位。
+    """
+    result = compute(merged, idx_hist)
 
     # 動能篩選 + 市場廣度。發行股數每天更新一次(公司會增減資)。
     try:
@@ -645,12 +752,13 @@ def daily_update():
         print(f"發行股數抓取失敗({e.__class__.__name__}),沿用既有的。")
         shares = load_shares()
     picks = momentum_screen(merged, shares)
-    breadth = update_breadth(merged, shares)
+    breadth, members = update_breadth(merged, shares)
     recs = [{k: (None if pd.isna(v) else v) for k, v in r.items()}
             for r in picks.to_dict("records")]
 
     # 從新聞標題判斷題材。純關鍵字比對, 抓不到就留白 —— 標題會一起輸出,
     # 歸不了類時可以直接翻。失敗不影響前面算好的東西。
+    themes = None
     try:
         try:
             import themes            # 直接跑 python scripts/update_data.py
@@ -662,30 +770,67 @@ def daily_update():
         print(f"題材判斷失敗({e.__class__.__name__}),略過。")
         result["themes"] = []
 
+    # 上榜天數。用有紀錄的交易日序列, 不是日曆天 —— 隔週末不算中斷。
+    mem_dates = sorted(members["date"].unique())
+    st = streaks(members, mem_dates)
+    for r in recs:
+        run, since, total = st.get(r["code"], (1, result["trade_date"], 1))
+        r["days"] = run            # 連續上榜幾個交易日
+        r["since"] = since         # 這一段從哪天開始
+        r["days_total"] = total    # 有紀錄以來累計上榜幾天
+    result["member_days"] = len(mem_dates)
+
+    # 把今天判斷出來的題材寫回名單, 之後才有「上一個交易日的族群分布」可比。
+    # 覆寫檔當後備 —— 昨天在榜、今天掉出去的個股今天不會被標註, 沒有標籤就
+    # 全部算進「未歸類」, 差值會失真。
+    try:
+        ov = themes.load_overrides() if themes else {}
+    except Exception:
+        ov = {}
+    today_theme = {**ov, **{r["code"]: r.get("theme") for r in recs if r.get("theme")}}
+    if mem_dates:
+        cur = members["date"] == mem_dates[-1]
+        members.loc[cur, "theme"] = members.loc[cur, "code"].map(today_theme)
+        members = save_members(members)
+
+    # 族群對前一個交易日的增減
+    prev_counts = theme_delta(members, mem_dates, today_theme)
+    if prev_counts:
+        for g in result["themes"]:
+            g["prev"] = prev_counts.get(g["theme"], 0)
+            g["delta"] = g["count"] - g["prev"]
+
     result["momentum"] = recs
     result["breadth"] = breadth.tail(120).to_dict("records")
 
+    write_result(result)
+    print(f"完成:{result['trade_date']} | 全市場 {result['universe']} 檔 | "
+          f"SEPA {len(result['sepa'])} 檔 | 當日強勢 {len(result['daily'])} 檔 | "
+          f"動能 {len(result['momentum'])} 檔 | "
+          f"上榜天數自 {mem_dates[0] if mem_dates else '—'} 起算")
+    return True
+
+
+def write_result(result: dict):
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT_PATH.write_text(json.dumps(result, ensure_ascii=False, allow_nan=False),
                            encoding="utf-8")
-    print(f"完成:{result['trade_date']} | 全市場 {result['universe']} 檔 | "
-          f"SEPA {len(result['sepa'])} 檔 | 當日強勢 {len(result['daily'])} 檔 | "
-          f"動能 {len(result['momentum'])} 檔")
-    return True
 
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--backfill", action="store_true",
                     help="回補約 280 個交易日的歷史資料(證交所+櫃買中心,免金鑰)")
+    ap.add_argument("--recompute", action="store_true",
+                    help="不抓新資料, 用現有歷史重算一次 latest.json。"
+                         "改了計算邏輯又還沒到下一個交易日時用 —— 平常那條路"
+                         "在沒有新交易日時會直接跳過, 不會重新產出。")
     args = ap.parse_args()
 
     if args.backfill:
         backfill()
-        # 回補完直接算一次
-        result = compute(load_history())
-        OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-        OUTPUT_PATH.write_text(json.dumps(result, ensure_ascii=False, allow_nan=False),
-                               encoding="utf-8")
+        enrich_and_write(load_history(), load_index_history())   # 回補完直接算一次
+    elif args.recompute:
+        enrich_and_write(load_history(), load_index_history())
     else:
         daily_update()

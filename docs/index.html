@@ -146,6 +146,10 @@ footer{max-width:1080px;margin:0 auto 40px;padding:0 24px;
 .br-bar{display:inline-block;height:6px;border-radius:3px;background:var(--amber);
   opacity:.5;vertical-align:middle}
 
+.badge.new{background:rgba(76,141,255,.18);color:#7aa9ff;border:1px solid rgba(76,141,255,.35)}
+.th-delta{font-family:var(--mono);font-size:12px;margin-left:6px}
+.th-delta.up{color:var(--up)}.th-delta.down{color:var(--down)}
+.th-delta.flat{color:var(--muted)}
 /* 族群題材 */
 .src{color:#4c8dff;margin-left:4px;font-size:10px;vertical-align:super}
 .th-wrap{display:flex;flex-direction:column;gap:14px;padding:14px 0}
@@ -291,6 +295,7 @@ const COLS_MOMENTUM = [
   {k:"perf_1m",label:"1月績效", num:true},
   {k:"value",  label:"成交值(億)", num:true},
   {k:"mcap",   label:"市值(億)", num:true, opt:true},
+  {k:"days",   label:"上榜", num:true},
 ];
 const COLS_US = [
   {k:"symbol", label:"代號", num:false},
@@ -299,6 +304,7 @@ const COLS_US = [
   {k:"perf_1m",label:"1月績效", num:true},
   {k:"turnover",label:"成交值($M)", num:true},
   {k:"mcap",   label:"市值($B)", num:true, opt:true},
+  {k:"days",   label:"上榜", num:true},
 ];
 
 let DATA = {sepa:[], daily:[], momentum:[], breadth:[], us:[], usbreadth:[]};
@@ -316,6 +322,7 @@ const fmt = (v,k)=>{
   if(k==="mcap") return tab==="us" ? v.toFixed(1) : Math.round(v).toLocaleString("en");
   if(k==="turnover") return Math.round(v).toLocaleString("en");
   if(k==="close") return v.toLocaleString("en",{minimumFractionDigits:v<100?2:1});
+  if(k==="days") return v===1 ? `<span class="badge new">新</span>` : v+" 天";
   return v;
 };
 
@@ -376,6 +383,7 @@ function render(){
         <td><span class="badge up">${fmt(x.perf_1m,"perf_1m")}</span></td>
         <td>${fmt(x.turnover,"turnover")}</td>
         <td class="col-opt">${fmt(x.mcap,"mcap")}</td>
+        <td title="自 ${x.since||"—"} 起連續上榜;累計 ${x.days_total||"—"} 天">${fmt(x.days,"days")}</td>
       </tr>`).join("");
     $("tbody").querySelectorAll("tr").forEach(tr=>{
       tr.onclick = ()=>window.open(tr.dataset.url,"_blank");
@@ -393,6 +401,7 @@ function render(){
         <td><span class="badge up">${fmt(x.perf_1m,"perf_1m")}</span></td>
         <td>${fmt(x.value)}</td>
         <td class="col-opt">${fmt(x.mcap,"mcap")}</td>
+        <td title="自 ${x.since||"—"} 起連續上榜;有紀錄以來累計 ${x.days_total||"—"} 天">${fmt(x.days,"days")}</td>
       </tr>`;
     }).join("");
     $("tbody").querySelectorAll("tr").forEach(tr=>{
@@ -445,6 +454,7 @@ function renderThemes(){
           <td>${fmt(x.close,"close")}</td>
           <td><span class="badge up">${fmt(x.perf_1m,"perf_1m")}</span></td>
           <td>$${(x.turnover||0).toFixed(0)}M</td>
+          <td title="自 ${x.since||"—"} 起連續上榜">${fmt(x.days,"days")}</td>
         </tr>`;
       }
       const flags = (x.flags||[]).map(f=>`<span class="flag">${f}</span>`).join("");
@@ -454,6 +464,7 @@ function renderThemes(){
         <td>${fmt(x.close,"close")}</td>
         <td><span class="badge up">${fmt(x.perf_1m,"perf_1m")}</span></td>
         <td>${fmt(x.value)}</td>
+        <td title="自 ${x.since||"—"} 起連續上榜">${fmt(x.days,"days")}</td>
       </tr>`;
     }).join("");
     const news = g.theme==="未歸類"
@@ -466,7 +477,11 @@ function renderThemes(){
     return `<div class="th-group">
       <div class="th-head">
         <span class="th-name">${g.theme}</span>
-        <span class="th-stat"><b>${g.count}</b> 檔</span>
+        <span class="th-stat"><b>${g.count}</b> 檔${
+          g.delta==null ? "" :
+          `<span class="th-delta ${g.delta>0?"up":g.delta<0?"down":"flat"}" `
+          + `title="前一個交易日 ${g.prev} 檔">${
+            g.delta>0?"+":g.delta<0?"":"±"}${g.delta}</span>`}</span>
         <span class="th-stat">${val}</span>
         <span class="th-stat">平均 <b>+${g.perf.toFixed(0)}%</b></span>
       </div>
