@@ -14,10 +14,13 @@
 
 import argparse
 import json
+import os
+import tempfile
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+import certifi
 import pandas as pd
 import requests
 
@@ -63,8 +66,36 @@ def to_float(x):
 
 # ---------------------------------------------------------------- fetchers
 
+# --- TPEx 的 TLS 憑證鏈不完整 ---------------------------------------------
+# www.tpex.org.tw 在 2026-09-07 換發憑證後只送葉憑證, 沒附中繼憑證
+# (openssl s_client 量到鏈長 1)。瀏覽器會照 AIA 欄位自己去補, Python 不會,
+# 所以在乾淨的環境(GitHub runner)上直接 CERTIFICATE_VERIFY_FAILED。
+# 把缺的那張跟 certifi 的根憑證合成一個暫時 bundle —— 中繼憑證的簽發者
+# TWCA CYBER Root CA 本來就在 certifi 裡, 所以驗證仍是完整一條鏈到受信任的
+# 根, 不是 verify=False。詳見 scripts/certs/README.txt。
+EXTRA_CA = Path(__file__).resolve().parent / "certs" / "twca_ssl_subca.pem"
+_ca_bundle = None
+
+
+def ca_bundle():
+    """回傳 certifi 根 + TPEx 缺的那張中繼憑證 合成的 bundle 路徑。"""
+    global _ca_bundle
+    if _ca_bundle is None:
+        if not EXTRA_CA.exists():
+            _ca_bundle = certifi.where()
+        else:
+            fd, path = tempfile.mkstemp(prefix="ca-", suffix=".pem")
+            with os.fdopen(fd, "wb") as f:
+                f.write(Path(certifi.where()).read_bytes())
+                f.write(b"\n")
+                f.write(EXTRA_CA.read_bytes())
+            _ca_bundle = path
+    return _ca_bundle
+
+
 def _get_with_retry(url, *, retries=5, backoff=8, **kwargs):
     """對暫時性連線錯誤(逾時、連線中斷等)重試幾次再放棄。"""
+    kwargs.setdefault("verify", ca_bundle())
     for attempt in range(1, retries + 1):
         try:
             r = requests.get(url, headers=HEADERS, **kwargs)
@@ -529,9 +560,18 @@ def fetch_day(d: date):
     抓單一交易日。兩個市場都要有資料才算數 —— 收盤後不久跑時證交所與櫃買的
     發布時間不見得同步, 只擋「兩邊都空」的話會把半個市場寫進歷史, 那天的 RS
     百分位和全市場檔數都會失真, 而且會一直留在滾動視窗裡。
+
+    來源整個掛掉(重試用盡)時回 None 而不是讓例外往上拋。2026-09-14 櫃買換了
+    憑證卻沒附中繼憑證, 五次重試全失敗, 例外一路衝出 daily_update 讓整支腳本
+    exit 1 —— 那天連「缺哪幾天」都沒印出來, 要翻 Actions 的堆疊追蹤才知道發生
+    什麼事。單一天抓不到就跳過那天, 其餘的照補, 最後由 daily_update 一次講清楚。
     """
-    twse, index_close = fetch_twse_date(d)
-    tpex = fetch_tpex_date(d)
+    try:
+        twse, index_close = fetch_twse_date(d)
+        tpex = fetch_tpex_date(d)
+    except Exception as e:
+        print(f"  {d} 抓取失敗({e.__class__.__name__}: {str(e)[:120]}),略過。")
+        return None, None
     if twse.empty and tpex.empty:
         return None, None            # 假日或尚未開盤
     if twse.empty or tpex.empty:
