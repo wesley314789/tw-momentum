@@ -1,0 +1,268 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+backtest_momentum.py — 「新上榜就買、R 倍數移動停利」的回測
+
+規則(依使用者指定):
+  進場  每當有個股**新進入**動能篩選名單, 隔一個交易日以開盤價買進 POSITION 元
+        的零股(可買零股所以不取整股)
+  停損  -7%。1R = 7%
+  保本  漲幅曾超過 +1R 之後, 停損上移到成本價
+  移動  再往上每過一個整數 R, 停利就鎖在那個 R —— 使用者給的例子: 漲到 +25%
+        (3.57R), 回檔到 3R = +21% 時出場
+
+  兩句描述合起來只有一種一致的解釋:
+      曾達最高 maxR < 1   -> 停損 -1R (-7%)
+      1 <= maxR < 2       -> 停損 0R (成本價, 保本)
+      maxR >= 2           -> 停損 floor(maxR) * R
+  2R 那一階會從 0R 直接跳到 2R, 是這組規則本身的性質, 不是實作上的取捨。
+  --smooth 可切換成 (floor(maxR)-1)*R 的平滑版, 用來確認結論不是卡在這個邊界。
+
+出場價的保守處理: 同一天先檢查是否觸及停損(用當日最低), 觸及就以停損價出場;
+沒觸及才用當日最高更新 maxR。這樣不會出現「同一天先創高把停利拉上去、再用新的
+停利價出場」這種事後諸葛。跳空低於停損價時以開盤價出場, 不假設拿得到停損價。
+
+用法:
+    python scripts/backtest_momentum.py --start 2026-01-01
+"""
+import argparse
+import io
+import math
+import sys
+from pathlib import Path
+
+import pandas as pd
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import update_data as u
+
+ROOT = Path(__file__).resolve().parent.parent
+LONG_HIST = ROOT / "data" / "history_long.csv.gz"
+
+POSITION = 10_000.0     # 每檔買進金額(元)
+R = 0.07                # 1R = 7%
+
+# 台股交易成本。零股與整股費率相同, 但多數券商有每筆最低手續費 20 元 ——
+# 一萬元的單子光手續費就佔 0.2%, 遠高於費率本身, 對這個策略影響很大。
+FEE_RATE = 0.001425     # 手續費, 買賣各一次
+FEE_MIN = 20.0          # 每筆最低手續費(元); 0 表示不收最低
+TAX_RATE = 0.003        # 證交稅, 賣出時收
+
+SMOOTH = False
+
+# 台股漲跌幅限制 ±10%。超過這個幅度的單日變動不可能是真的行情, 只會是除權息、
+# 減資或面額變更 —— 而這兩個交易所的每日行情 API 給的是**未還原權值**的原始
+# 價格。2026 年內就有 66 次。不處理的話, 沛爾生醫調降面額那天會被算成單日
+# -90%(回測記成 -13.41R), 那是資料假象不是虧損。
+# 我們拿不到還原因子(要另外去對除權息參考價), 所以不猜: 偵測到就在前一天的
+# 收盤價把部位中性出場, 並且不計入績效統計, 只報告被排除幾筆。
+LIMIT = 0.105
+
+
+# 整數 R 的邊界要容忍浮點誤差: 0.21/0.07 = 2.9999999999999996, 直接 floor 會
+# 變成 2R, 剛好把使用者舉的「漲到 3R」那個例子算錯一階。
+EPS = 1e-9
+
+
+def stop_level(max_r: float) -> float:
+    """回傳當下的停損/停利價位, 以報酬率表示(-0.07 = -7%)。"""
+    if max_r < 1 - EPS:
+        return -R
+    if SMOOTH:
+        return (math.floor(max_r + EPS) - 1) * R
+    return 0.0 if max_r < 2 - EPS else math.floor(max_r + EPS) * R
+
+
+def load_prices() -> pd.DataFrame:
+    if LONG_HIST.exists():
+        df = pd.read_csv(LONG_HIST, dtype={"code": str})
+    else:
+        df = u.load_history()
+    df = df.sort_values(["code", "date"])
+    chg = df.groupby("code")["close"].pct_change()
+    df["_corp"] = chg.abs() > LIMIT      # 疑似除權息/減資/面額變更
+    return df
+
+
+def membership(hist: pd.DataFrame, shares: pd.DataFrame, dates: list) -> dict:
+    """{date: set(code)} —— 每個交易日通過動能篩選的名單。"""
+    out = {}
+    for i, d in enumerate(dates, 1):
+        picks = u.momentum_screen(hist[hist["date"] <= d], shares)
+        out[d] = set(picks["code"]) if len(picks) else set()
+        if i % 20 == 0:
+            print(f"  篩選 {i}/{len(dates)} ({d}: {len(out[d])} 檔)", flush=True)
+    return out
+
+
+def fees(amount: float, is_sell: bool, rate=None, minimum=None) -> float:
+    rate = FEE_RATE if rate is None else rate
+    minimum = FEE_MIN if minimum is None else minimum
+    f = max(amount * rate, minimum) if minimum else amount * rate
+    return f + (amount * TAX_RATE if is_sell else 0.0)
+
+
+def run(hist: pd.DataFrame, members: dict, dates: list,
+        rate=None, minimum=None, with_fees: bool = True) -> pd.DataFrame:
+    px = {c: g.set_index("date") for c, g in hist.groupby("code")}
+    trades, open_pos = [], {}
+
+    for i, d in enumerate(dates):
+        # --- 先處理已持有的部位 ---
+        for code in list(open_pos):
+            pos = open_pos[code]
+            if d not in px[code].index:
+                continue                      # 停牌, 續抱
+            row = px[code].loc[d]
+            if bool(row["_corp"]):        # 除權息/減資當天:中性出場, 不計績效
+                pos.update(exit_date=d, exit_px=pos["last_px"], reason="除權息排除")
+                trades.append(pos)
+                del open_pos[code]
+                continue
+            lo, hi, op, cl = (float(row["low"]), float(row["high"]),
+                              float(row["open"]), float(row["close"]))
+            stop_px = pos["entry"] * (1 + stop_level(pos["max_r"]))
+            if lo <= stop_px:                 # 先判停損, 不讓當日新高先把停利拉上去
+                exit_px = min(op, stop_px)    # 跳空就以開盤價出場
+                reason = ("停損" if pos["max_r"] < 1 else
+                          "保本" if pos["max_r"] < 2 else "移動停利")
+                pos.update(exit_date=d, exit_px=exit_px, reason=reason)
+                trades.append(pos)
+                del open_pos[code]
+                continue
+            pos["max_r"] = max(pos["max_r"], (hi / pos["entry"] - 1) / R)
+            pos["last_px"] = cl
+
+        # --- 今天新進榜的, 明天開盤買 ---
+        if i + 1 >= len(dates):
+            continue
+        prev = members.get(dates[i - 1], set()) if i else set()
+        new = members.get(d, set()) - prev
+        nxt = dates[i + 1]
+        for code in sorted(new):
+            if code in open_pos or code not in px or nxt not in px[code].index:
+                continue
+            entry = float(px[code].loc[nxt, "open"] or 0)
+            if entry <= 0:
+                continue
+            open_pos[code] = dict(code=code, name=px[code].loc[nxt, "name"],
+                                  listed=d, entry_date=nxt, entry=entry,
+                                  max_r=0.0, last_px=entry,
+                                  exit_date=None, exit_px=None, reason=None)
+
+    for code, pos in open_pos.items():        # 還沒出場的以最後一天收盤計
+        pos.update(exit_date=dates[-1], exit_px=pos["last_px"], reason="仍持有")
+        trades.append(pos)
+
+    t = pd.DataFrame(trades)
+    if t.empty:
+        return t
+    t["shares"] = POSITION / t["entry"]
+    t["gross"] = (t["exit_px"] - t["entry"]) * t["shares"]
+    if with_fees:
+        buy = t["entry"] * t["shares"]
+        sell = t["exit_px"] * t["shares"]
+        t["cost"] = [fees(b, False, rate, minimum) + fees(s, True, rate, minimum)
+                     for b, s in zip(buy, sell)]
+    else:
+        t["cost"] = 0.0
+    t["pnl"] = t["gross"] - t["cost"]
+    t["ret"] = t["pnl"] / POSITION
+    t["r_mult"] = t["ret"] / R
+    return t.sort_values("entry_date").reset_index(drop=True)
+
+
+def report(o, t: pd.DataFrame, label: str, dates: list):
+    o.write(f"\n{'=' * 64}\n{label}  ({dates[0]} ~ {dates[-1]})\n{'=' * 64}\n")
+    if t.empty:
+        o.write("沒有任何交易\n")
+        return
+    n = len(t)
+    win = int((t["pnl"] > 0).sum())
+    invested = n * POSITION
+    o.write(f"交易筆數      {n}\n")
+    o.write(f"累計投入      {invested:,.0f} 元 (每檔 {POSITION:,.0f})\n")
+    o.write(f"總損益        {t['pnl'].sum():+,.0f} 元   ({t['pnl'].sum() / invested * 100:+.2f}% / 累計投入)\n")
+    o.write(f"交易成本      {t['cost'].sum():,.0f} 元   (佔累計投入 {t['cost'].sum() / invested * 100:.2f}%)\n")
+    o.write(f"勝率          {win}/{n} = {win / n * 100:.1f}%\n")
+    o.write(f"平均每筆      {t['ret'].mean() * 100:+.2f}%  ({t['r_mult'].mean():+.3f}R)\n")
+    up = t.loc[t["pnl"] > 0, "r_mult"]
+    dn = t.loc[t["pnl"] <= 0, "r_mult"]
+    o.write(f"賺的平均      {up.mean():+.2f}R ({len(up)} 筆)   賠的平均 {dn.mean():+.2f}R ({len(dn)} 筆)\n")
+    gp = t.loc[t["pnl"] > 0, "pnl"].sum()
+    gl = -t.loc[t["pnl"] <= 0, "pnl"].sum()
+    o.write(f"獲利因子      {gp / gl:.2f}\n" if gl else "獲利因子      —\n")
+    o.write(f"最好 / 最差   {t['r_mult'].max():+.2f}R / {t['r_mult'].min():+.2f}R\n")
+    # 累計投入不是實際要準備的錢 —— 部位會滾動, 真正需要的是同時在倉的最大檔數
+    ev = pd.concat([pd.Series(1, index=pd.to_datetime(t["entry_date"])),
+                    pd.Series(-1, index=pd.to_datetime(t["exit_date"]))])
+    conc = ev.groupby(level=0).sum().sort_index().cumsum()
+    peak = int(conc.max())
+    avg = float(conc.mean())
+    cap = peak * POSITION
+    o.write(f"同時在倉      最多 {peak} 檔, 平均 {avg:.0f} 檔\n")
+    o.write(f"實際佔用本金  {cap:,.0f} 元 (最多同時在倉 × 每檔 {POSITION:,.0f})\n")
+    o.write(f"對佔用本金    {t['pnl'].sum() / cap * 100:+.2f}%\n")
+    hold = (pd.to_datetime(t["exit_date"]) - pd.to_datetime(t["entry_date"])).dt.days
+    o.write(f"持有天數      中位數 {hold.median():.0f} 天, 平均 {hold.mean():.1f} 天\n")
+    m = t.copy()
+    m["月"] = pd.to_datetime(m["exit_date"]).dt.strftime("%Y-%m")
+    o.write("\n逐月損益(以出場日計):\n")
+    for mo, g in m.groupby("月"):
+        o.write(f"  {mo}  {len(g):4d} 筆  {g['pnl'].sum():+9,.0f} 元  "
+                f"平均 {g['r_mult'].mean():+.2f}R\n")
+    o.write("\n出場原因:\n")
+    for r, g in t.groupby("reason"):
+        o.write(f"  {r:<6s} {len(g):4d} 筆  平均 {g['r_mult'].mean():+6.2f}R  "
+                f"合計 {g['pnl'].sum():+9,.0f} 元\n")
+    o.write("\n最賺的 8 筆:\n")
+    for _, x in t.nlargest(8, "pnl").iterrows():
+        o.write(f"  {x['code']} {str(x['name'])[:8]:<9s} {x['entry_date']} -> {x['exit_date']} "
+                f"{x['r_mult']:+6.2f}R {x['pnl']:+8,.0f} 元  {x['reason']}\n")
+    o.write("\n最賠的 5 筆:\n")
+    for _, x in t.nsmallest(5, "pnl").iterrows():
+        o.write(f"  {x['code']} {str(x['name'])[:8]:<9s} {x['entry_date']} -> {x['exit_date']} "
+                f"{x['r_mult']:+6.2f}R {x['pnl']:+8,.0f} 元  {x['reason']}\n")
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--start", default="2026-01-01")
+    ap.add_argument("--end", default=None)
+    ap.add_argument("--out", default="_bt_out.txt")
+    ap.add_argument("--smooth", action="store_true",
+                    help="移動停利改用 (floor(maxR)-1)*R, 確認結論對規則邊界不敏感")
+    args = ap.parse_args()
+
+    global SMOOTH
+    SMOOTH = args.smooth
+
+    hist = load_prices()
+    shares = u.load_shares()
+    all_dates = sorted(hist["date"].unique())
+    usable = all_dates[199:]          # 前 200 個交易日拿來算 SMA200
+    dates = [d for d in usable if d >= args.start and (not args.end or d <= args.end)]
+    if not dates:
+        print(f"沒有可回測的交易日。歷史 {all_dates[0]} ~ {all_dates[-1]}, "
+              f"最早可篩選日 {usable[0] if usable else '—'}", file=sys.stderr)
+        return 1
+    print(f"回測 {dates[0]} ~ {dates[-1]} ({len(dates)} 個交易日)"
+          f"{' [平滑版移動停利]' if SMOOTH else ''}", flush=True)
+
+    mem = membership(hist, shares, dates)
+    scen = [
+        ("原價手續費 + 每筆最低 20 元", dict(rate=0.001425, minimum=20.0)),
+        ("六折手續費 + 最低 1 元(電子下單零股常見)", dict(rate=0.001425 * 0.6, minimum=1.0)),
+        ("完全不計交易成本(理論上限)", dict(with_fees=False)),
+    ]
+    with io.open(args.out, "w", encoding="utf-8") as o:
+        for label, kw in scen:
+            report(o, run(hist, mem, dates, **kw), label, dates)
+        t = run(hist, mem, dates, rate=0.001425, minimum=20.0)
+        t.to_csv("_bt_trades.csv", index=False, encoding="utf-8-sig")
+    print(f"寫到 {args.out}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
