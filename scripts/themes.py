@@ -237,7 +237,8 @@ def load_overrides(path: Path = OVERRIDES_PATH) -> dict:
             code = (row.get("code") or "").strip()
             theme = (row.get("theme") or "").strip()
             if code and theme:
-                out[code] = theme
+                # "-" = 查過、確定不該歸族群, 用來蓋掉關鍵字的誤判
+                out[code] = None if theme == "-" else theme
     return out
 
 
