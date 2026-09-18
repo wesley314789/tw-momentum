@@ -52,7 +52,7 @@ MIN_MCAP = 5e8        # 市值下限(美元)
 MIN_TURNOVER = 5e6    # 成交值下限(美元)
 MIN_EXCESS = 10.0     # 近一個月超額報酬下限(百分點, 個股漲幅 - S&P 500 漲幅)
 BENCH = "^GSPC"       # 比較基準: S&P 500
-PERF_DAYS = 21        # 「一個月」取 21 個交易日
+PERF_DAYS = 20        # 「一個月」取 20 個交易日, 與台股 BR_PERF_DAYS 一致
 SMA_LONG = 200
 WORKERS = 4           # 併發數。Yahoo 沒有公開額度, 保守一點
 KEEP_DAYS = 280
@@ -188,7 +188,7 @@ def screen(arrs: dict, uni: pd.DataFrame, as_of: int | None = None,
     偏移量對到不同日期。市值用當下的值, Nasdaq 只給現值沒有歷史。
 
     bench = fetch_bench() 的 (序數, 收盤)。S&P 500 的漲幅用**這檔自己的視窗**
-    算(它 21 根 K 棒前那天到今天), 跟台股一樣, 要比就比同一段。
+    算(它 PERF_DAYS 根 K 棒前那天到今天), 跟台股一樣, 要比就比同一段。
     """
     if bench is None:
         raise ValueError("screen() 需要 bench(S&P 500 收盤)才能算相對強弱")

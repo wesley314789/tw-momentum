@@ -52,7 +52,10 @@ DAILY_VOL_RATIO = 1.5   # 當日強勢: 量比下限
 BR_MCAP = 2e9      # 總市值下限(元)
 BR_TURNOVER = 5e7  # 成交值下限(元)
 BR_EXCESS = 10.0   # 一個月超額報酬下限(百分點, 個股漲幅 - 加權指數漲幅)
-BR_PERF_DAYS = 21  # 「一個月」取 21 個交易日
+BR_PERF_DAYS = 20  # 「一個月」取 20 個交易日(四週)。原本是 21(= 252/12,
+                   # 跟 RS 的 63/126/189/252 同一套換算), 2026-09-18 依使用者偏好
+                   # 改成 20。兩者都只是近似 —— TradingView 的「1 個月」是日曆月,
+                   # 實際落在 20~23 個交易日之間
 # 篩選條件的指紋。回測/研究腳本的名單快取檔名帶著它 —— 條件一改, 快取自然
 # 失效, 不會悄悄拿舊定義的名單去算新問題。
 SCREEN_SIG = f"x{BR_EXCESS:g}_mc{BR_MCAP:.0e}_tv{BR_TURNOVER:.0e}_d{BR_PERF_DAYS}"
@@ -348,8 +351,9 @@ def momentum_screen(hist: pd.DataFrame, shares: pd.DataFrame,
         價格 > SMA200、SMA10 > SMA20、總市值 > BR_MCAP、成交值 > BR_TURNOVER、
         BR_PERF_DAYS 個交易日漲幅 - 同期間加權指數漲幅 > BR_EXCESS 個百分點
 
-    大盤漲幅用**這檔股票自己的視窗**算(它 21 根 K 棒前的那一天到今天), 不是固定
-    的「21 個交易日前」—— 中間停牌過的個股, 兩者的起點會不一樣, 要比就得比同一段。
+    大盤漲幅用**這檔股票自己的視窗**算(它 BR_PERF_DAYS 根 K 棒前的那一天到今天),
+    不是固定的「全市場 BR_PERF_DAYS 個交易日前」—— 中間停牌過的個股, 兩者的起點
+    會不一樣, 要比就得比同一段。
 
     idx 是加權指數收盤(date, close)。沒給就讀 data/index.csv.gz, 但那份只有
     280 天; 回測更早的區間要自己傳涵蓋得到的序列進來。
@@ -859,6 +863,75 @@ def enrich_and_write(merged: pd.DataFrame, idx_hist: pd.DataFrame | None = None)
     return True
 
 
+def rebuild_breadth():
+    """
+    用**目前的**篩選條件, 把廣度與上榜名單整段重算。
+
+    改了篩選參數(門檻、天數…)之後要跑這個 —— 否則 breadth.csv 前面是舊定義、
+    之後是新定義, 那條線會在改的那天出現一個不存在的斷層, 20MA、上榜天數、族群
+    日增減也全部跟著錯。
+
+    每一天只用「那天往前 KEEP_DAYS 個交易日」的資料去篩, 跟線上流水線當天看得
+    到的一樣。有 data/history_long.csv.gz(回測用的加長歷史)就用它, 能重算滿
+    KEEP_DAYS 天; 沒有的話只能從 280 天的 history.csv.gz 重算最後約 80 天。
+    同一天同一檔原本標好的題材會保留。另外把全部可算日的名單存成回測/研究用的
+    快取(檔名帶 SCREEN_SIG)。
+    """
+    long_hist = ROOT / "data" / "history_long.csv.gz"
+    long_idx = ROOT / "data" / "index_long.csv.gz"
+    hist = load_history()
+    idx = load_index_history()
+    if long_hist.exists():
+        hist = pd.concat([pd.read_csv(long_hist, dtype={"code": str}), hist], ignore_index=True)
+        hist = hist.drop_duplicates(subset=["date", "code"], keep="last")
+        hist.sort_values(["date", "code"]).to_csv(long_hist, index=False, compression="gzip")
+    if long_idx.exists():
+        idx = pd.concat([pd.read_csv(long_idx), idx], ignore_index=True)
+        idx = idx.dropna(subset=["close"]).drop_duplicates("date", keep="last").sort_values("date")
+        idx.to_csv(long_idx, index=False, compression="gzip")
+
+    shares = load_shares()
+    dates = sorted(hist["date"].unique())
+    usable = list(range(199, len(dates)))
+    print(f"重算 {len(usable)} 天 {dates[usable[0]]} ~ {dates[-1]} | 條件 {SCREEN_SIG}", flush=True)
+
+    by_date = {d: g for d, g in hist.groupby("date")}
+    members, rows = {}, []
+    t0 = time.time()
+    for n, i in enumerate(usable, 1):
+        d = dates[i]
+        window = dates[max(0, i - (KEEP_DAYS - 1)): i + 1]
+        picks = momentum_screen(pd.concat([by_date[x] for x in window], ignore_index=True),
+                                shares, idx=idx)
+        codes = set(picks["code"]) if len(picks) else set()
+        members[d] = codes
+        uni = len(by_date[d])
+        rows.append({"date": d, "count": len(codes), "universe": uni,
+                     "pct": round(len(codes) / uni * 100, 2) if uni else 0})
+        if n % 50 == 0:
+            left = (time.time() - t0) / n * (len(usable) - n) / 60
+            print(f"  {n}/{len(usable)} {d}: {len(codes)} 檔 (剩約 {left:.0f} 分)", flush=True)
+
+    cache = ROOT / "data" / f"_bt_members_{SCREEN_SIG}.csv.gz"
+    pd.DataFrame([{"date": d, "code": c} for d, cs in members.items() for c in cs]) \
+      .to_csv(cache, index=False, compression="gzip")
+
+    # 取代掉整份廣度(不是合併) —— 合併的話重算不到的舊日子會留下舊定義
+    BREADTH_PATH.unlink(missing_ok=True)
+    save_breadth(pd.DataFrame(rows))
+
+    old = load_members()
+    old_theme = {(r.date, r.code): r.theme for r in old.itertuples()
+                 if isinstance(r.theme, str) and r.theme}
+    keep = set(sorted(members)[-KEEP_DAYS:])
+    m = save_members(pd.DataFrame(
+        [{"date": d, "code": c, "theme": old_theme.get((d, c))}
+         for d, cs in members.items() if d in keep for c in cs],
+        columns=["date", "code", "theme"]))
+    print(f"完成: breadth {len(load_breadth())} 天, 名單 {m['date'].nunique()} 天"
+          f"(保留題材 {m['theme'].notna().sum()} 筆), 回測快取 {len(members)} 天 -> {cache.name}")
+
+
 def write_result(result: dict):
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT_PATH.write_text(json.dumps(result, ensure_ascii=False, allow_nan=False),
@@ -873,9 +946,15 @@ if __name__ == "__main__":
                     help="不抓新資料, 用現有歷史重算一次 latest.json。"
                          "改了計算邏輯又還沒到下一個交易日時用 —— 平常那條路"
                          "在沒有新交易日時會直接跳過, 不會重新產出。")
+    ap.add_argument("--rebuild-breadth", action="store_true",
+                    help="改了篩選參數之後用: 以目前條件整段重算廣度與上榜名單, "
+                         "再重產 latest.json")
     args = ap.parse_args()
 
-    if args.backfill:
+    if args.rebuild_breadth:
+        rebuild_breadth()
+        enrich_and_write(load_history(), load_index_history())
+    elif args.backfill:
         backfill()
         enrich_and_write(load_history(), load_index_history())   # 回補完直接算一次
     elif args.recompute:
