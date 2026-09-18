@@ -452,7 +452,11 @@ function renderThemes(){
     const list = (byTheme[g.theme]||[]).slice().sort((a,b)=>b.perf_1m-a.perf_1m);
     const rows = list.map(x=>{
       // 覆寫來的題材(人工/LLM 研究)標一個點,跟關鍵字猜的區分開
-      const src = x.theme_src==="override" ? `<span class="src" title="人工/研究標註">●</span>` : "";
+      // 覆寫來的題材標 ●;覆寫成 "-"(theme 為空)代表查過、確定是個股因素,
+      // 標 ✓ —— 否則在「未歸類」裡跟「還沒查」的看起來一模一樣
+      const src = x.theme_src!=="override" ? ""
+        : x.theme ? `<span class="src" title="人工/研究標註">●</span>`
+        : `<span class="src" title="已查證:個股因素或投機,不屬於族群行情">✓</span>`;
       if(us){
         return `<tr data-url="https://finance.yahoo.com/quote/${x.symbol}">
           <td>${x.symbol}</td>
@@ -473,9 +477,11 @@ function renderThemes(){
         <td title="自 ${x.since||"—"} 起連續上榜">${fmt(x.days,"days")}</td>
       </tr>`;
     }).join("");
-    const news = g.theme==="未歸類"
+    // 只攤開「還沒查」的;已查證為個股因素的(✓)不需要再判斷
+    const pending = list.filter(x=>x.theme_src!=="override");
+    const news = g.theme==="未歸類" && pending.length
       ? `<div class="th-news">關鍵字比對不到題材,以下是這些個股的新聞標題:<br>`
-        + list.slice(0,6).map(x=>`· <b>${x.name}</b> ${(x.news||[])[0]||"(無新聞)"}`).join("<br>")
+        + pending.slice(0,6).map(x=>`· <b>${x.name}</b> ${(x.news||[])[0]||"(無新聞)"}`).join("<br>")
         + `</div>`
       : "";
     const val = us ? `成交值 <b>$${g.value.toFixed(0)}</b>M`

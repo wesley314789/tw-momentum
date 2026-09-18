@@ -524,7 +524,7 @@ def streaks(members: pd.DataFrame, dates: list[str]) -> dict:
 
 
 def theme_delta(members: pd.DataFrame, dates: list[str],
-                today_theme: dict) -> dict:
+                today_theme: dict, forced: dict | None = None) -> dict:
     """
     每個題材相對前一個交易日的檔數增減。
 
@@ -532,6 +532,12 @@ def theme_delta(members: pd.DataFrame, dates: list[str],
     昨天掉出名單的個股今天不會被標註, 沒有標籤可用; 而且要比較的是「這個族群
     的檔數變多還是變少」, 兩天用同一套標籤才比得準。今天有標註的以今天為準,
     這樣人工覆寫或題材改名會同時套用到兩邊, 不會憑空生出一組差值。
+
+    forced 是覆寫檔(load_overrides)的內容, 最後套用而且 None 也算數 —— 覆寫檔
+    裡填 "-" 的個股是「查過、確定不屬於任何族群」。today_theme 會把沒有標籤的
+    濾掉(那通常代表「還沒查」), 所以不另外處理的話, 被 "-" 蓋掉的個股前一天會
+    退回歷史上那個錯的標籤: 只要它還在榜上, 網頁就每天顯示「原題材 -1、未歸類
+    +1」, 其實什麼都沒變。
     """
     if members.empty or len(dates) < 2:
         return {}
@@ -542,7 +548,7 @@ def theme_delta(members: pd.DataFrame, dates: list[str],
         known = known[known != ""]
         if len(known):
             last[code] = known.iloc[-1]
-    label = {**last, **{k: v for k, v in today_theme.items() if v}}
+    label = {**last, **{k: v for k, v in today_theme.items() if v}, **(forced or {})}
 
     prev_day = dates[-2]
     prev = members[members["date"] == prev_day]["code"]
@@ -846,7 +852,7 @@ def enrich_and_write(merged: pd.DataFrame, idx_hist: pd.DataFrame | None = None)
         members = save_members(members)
 
     # 族群對前一個交易日的增減
-    prev_counts = theme_delta(members, mem_dates, today_theme)
+    prev_counts = theme_delta(members, mem_dates, today_theme, forced=ov)
     if prev_counts:
         for g in result["themes"]:
             g["prev"] = prev_counts.get(g["theme"], 0)

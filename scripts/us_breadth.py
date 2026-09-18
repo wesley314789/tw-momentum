@@ -305,8 +305,13 @@ def streaks(members: pd.DataFrame, dates: list) -> dict:
     return out
 
 
-def prev_theme_counts(members: pd.DataFrame, dates: list, today_theme: dict) -> dict:
-    """前一個交易日各題材的檔數。兩天用同一套標籤才比得準,理由同台股。"""
+def prev_theme_counts(members: pd.DataFrame, dates: list, today_theme: dict,
+                      forced: dict | None = None) -> dict:
+    """
+    前一個交易日各題材的檔數。兩天用同一套標籤才比得準,理由同台股。
+    forced = 覆寫檔內容, 最後套用且 None("-" = 確定不屬於任何族群)也算數,
+    否則被 "-" 蓋掉的個股前一天會退回舊標籤, 每天憑空多一組差值。
+    """
     if members.empty or len(dates) < 2:
         return {}
     last = {}
@@ -315,7 +320,7 @@ def prev_theme_counts(members: pd.DataFrame, dates: list, today_theme: dict) -> 
         k = k[k != ""]
         if len(k):
             last[sym] = k.iloc[-1]
-    label = {**last, **{k: v for k, v in today_theme.items() if v}}
+    label = {**last, **{k: v for k, v in today_theme.items() if v}, **(forced or {})}
     counts = {}
     for sym in members[members["date"] == dates[-2]]["symbol"]:
         t = label.get(sym) or "未歸類"
@@ -423,7 +428,7 @@ def main():
         members.loc[cur, "theme"] = members.loc[cur, "symbol"].map(today_theme)
         members = save_members(members)
 
-    prev = prev_theme_counts(members, mem_dates, today_theme)
+    prev = prev_theme_counts(members, mem_dates, today_theme, forced=ov)
     if prev:
         for g in groups:
             g["prev"] = prev.get(g["theme"], 0)
