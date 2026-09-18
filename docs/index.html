@@ -271,7 +271,7 @@ footer{max-width:1080px;margin:0 auto 40px;padding:0 24px;
 <footer>
   SEPA:收盤 > 50MA > 150MA > 200MA(且 200MA 上升)、高於 52 週低點 30%+、距 52 週高點 25% 內、RS ≥ 70、成交值 ≥ 1 億。
   當日強勢:漲幅 ≥ 4%、量比 ≥ 1.5、成交值 ≥ 1 億。
-  動能篩選:收盤 > 200MA、10MA > 20MA、總市值 ≥ 20 億、成交值 ≥ 5,000 萬、近 21 個交易日漲幅減去同期加權指數漲幅 &gt; 10 個百分點(2026-09-18 起,原本是漲幅 ≥ 20%;歷史廣度已用新條件重算);市場廣度即為每日通過此篩選的檔數。
+  動能篩選:收盤 > 200MA、10MA > 20MA、總市值 ≥ 20 億、成交值 ≥ 5,000 萬、近 21 個交易日漲幅減去同期加權指數漲幅 &gt; 10 個百分點(2026-09-18 起,原本是漲幅 ≥ 20%;歷史廣度已用新條件重算);市場廣度即為每日通過此篩選的檔數。美股同一組條件,基準改為 S&amp;P 500,市值門檻 $5 億、成交值門檻 $500 萬。
   美股用同一組條件,門檻改為市值 ≥ $5 億、成交值 ≥ $500 萬。
   資料來源:台股為證交所/櫃買中心 OpenAPI;美股宇宙與市值取自 Nasdaq screener、日 K 取自 Yahoo(非官方 API,無服務保證)。盤後更新,僅供研究參考。
 </footer>
@@ -303,6 +303,7 @@ const COLS_US = [
   {k:"name",   label:"名稱", num:false},
   {k:"close",  label:"收盤($)", num:true},
   {k:"perf_1m",label:"1月績效", num:true},
+  {k:"excess_1m",label:"超額", num:true},
   {k:"turnover",label:"成交值($M)", num:true},
   {k:"mcap",   label:"市值($B)", num:true, opt:true},
   {k:"days",   label:"上榜", num:true},
@@ -383,7 +384,8 @@ function render(){
         <td>${x.symbol}</td>
         <td class="name">${x.name||""}</td>
         <td>${fmt(x.close,"close")}</td>
-        <td><span class="badge up">${fmt(x.perf_1m,"perf_1m")}</span></td>
+        <td><span class="badge ${x.perf_1m>=0?"up":"down"}">${fmt(x.perf_1m,"perf_1m")}</span></td>
+        <td title="個股 ${fmt(x.perf_1m,"perf_1m")} − 同期 S&amp;P 500 ${fmt(x.idx_1m,"perf_1m")}">${fmt(x.excess_1m,"excess_1m")}</td>
         <td>${fmt(x.turnover,"turnover")}</td>
         <td class="col-opt">${fmt(x.mcap,"mcap")}</td>
         <td title="自 ${x.since||"—"} 起連續上榜;累計 ${x.days_total||"—"} 天">${fmt(x.days,"days")}</td>
@@ -595,8 +597,7 @@ document.querySelectorAll(".tab").forEach(b=>{
     document.querySelector(".controls").hidden = tab==="breadth" || tab==="usbreadth"
       || tab==="themes" || tab==="usthemes";
     if(tab==="daily") sortKey="chg_pct";
-    else if(tab==="momentum") sortKey="excess_1m";   // 入選條件就是超額, 預設照它排
-    else if(tab==="us") sortKey="perf_1m";
+    else if(tab==="momentum" || tab==="us") sortKey="excess_1m";   // 入選條件就是超額, 預設照它排
     else sortKey="rs";
     sortDir=-1;
     render();

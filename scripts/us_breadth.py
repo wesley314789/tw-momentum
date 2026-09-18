@@ -4,12 +4,15 @@
 us_breadth.py — 美股版動能篩選與市場廣度
 
 條件與台股那組相同(scripts/update_data.py 的 momentum_screen):
-    收盤 > SMA200、SMA10 > SMA20、市值 > MIN_MCAP、
-    成交值 > MIN_TURNOVER、近 PERF_DAYS 個交易日績效 > MIN_PERF%
+    收盤 > SMA200、SMA10 > SMA20、市值 > MIN_MCAP、成交值 > MIN_TURNOVER、
+    近 PERF_DAYS 個交易日漲幅 - 同期 S&P 500 漲幅 > MIN_EXCESS 個百分點
+
+最後一條 2026-09-18 起從「漲幅 > 20%」改成相對大盤, 理由同台股:絕對門檻跟著
+大盤走, 廣度會混進大量「大盤本身漲多少」的成分。
 
 用法:
-    python scripts/us_breadth.py --backfill   # 首次:連同歷史廣度一起算
-    python scripts/us_breadth.py              # 每日更新
+    python scripts/us_breadth.py --backfill   # 連同歷史廣度與名單一起重算(抓兩年)
+    python scripts/us_breadth.py              # 每日更新(抓一年)
 
 資料來源都是免費的:
   * 宇宙與市值 —— Nasdaq screener, 一次回傳全美約 7,000 檔
@@ -27,6 +30,7 @@ import re
 import json
 import sys
 import time
+import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -46,7 +50,8 @@ HEADERS = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
 
 MIN_MCAP = 5e8        # 市值下限(美元)
 MIN_TURNOVER = 5e6    # 成交值下限(美元)
-MIN_PERF = 20.0       # 近一個月績效下限(%)
+MIN_EXCESS = 10.0     # 近一個月超額報酬下限(百分點, 個股漲幅 - S&P 500 漲幅)
+BENCH = "^GSPC"       # 比較基準: S&P 500
 PERF_DAYS = 21        # 「一個月」取 21 個交易日
 SMA_LONG = 200
 WORKERS = 4           # 併發數。Yahoo 沒有公開額度, 保守一點
@@ -86,11 +91,12 @@ def fetch_universe() -> pd.DataFrame:
     return df[["symbol", "yahoo", "name", "mcap"]].reset_index(drop=True)
 
 
-def _one(session: requests.Session, sym: str, retries: int = 2):
+def _one(session: requests.Session, sym: str, retries: int = 2, rng: str = "1y"):
     for attempt in range(retries + 1):
         try:
-            r = session.get(YAHOO_URL.format(sym), timeout=25,
-                            params={"range": "1y", "interval": "1d"})
+            # quote: 指數代號帶 ^(^GSPC), 放進路徑前要編碼
+            r = session.get(YAHOO_URL.format(urllib.parse.quote(sym)), timeout=25,
+                            params={"range": rng, "interval": "1d"})
             if r.status_code == 429:            # 被限流就退一步再試
                 time.sleep(2 * (attempt + 1))
                 continue
@@ -102,6 +108,13 @@ def _one(session: requests.Session, sym: str, retries: int = 2):
                 "close": q["close"],
                 "volume": q["volume"],
             }).dropna()
+            # 盤中執行時 Yahoo 會回一根還沒收完的「今天」。每日更新遇到已經有
+            # 廣度的日子會跳過, 所以盤中算出來的半根 K 棒會永久留在紀錄裡 ——
+            # 排程都在美股收盤後跑所以沒踩過, 手動執行就會。收盤(16:00 ET)加
+            # 點緩衝之前, 今天那根一律不要。
+            ny = pd.Timestamp.now(tz="America/New_York")
+            if ny.hour * 60 + ny.minute < 16 * 60 + 20:
+                df = df[df["date"] != ny.date()]
             return sym, df if len(df) >= SMA_LONG else None
         except Exception:
             if attempt == retries:
@@ -110,13 +123,28 @@ def _one(session: requests.Session, sym: str, retries: int = 2):
     return sym, None
 
 
-def fetch_bars(symbols: list[str]) -> dict:
-    """逐檔抓一年日 K。回傳 {symbol: DataFrame}, 抓不到的不放進去。"""
+def fetch_bench(rng: str = "1y"):
+    """
+    S&P 500 收盤, 回傳 (日期序數陣列, 收盤陣列)。抓不到就直接失敗 —— 沒有基準
+    就算不出相對強弱, 硬算下去會讓每一檔都被判不合格, 廣度變成 0。
+    """
+    with requests.Session() as s:
+        s.headers.update(HEADERS)
+        _, df = _one(s, BENCH, retries=4, rng=rng)
+    if df is None or df.empty:
+        raise RuntimeError(f"抓不到基準 {BENCH}, 無法計算相對大盤的漲幅")
+    df = df.sort_values("date")
+    return (np.array([d.toordinal() for d in df["date"]]),
+            df["close"].to_numpy(dtype=float))
+
+
+def fetch_bars(symbols: list[str], rng: str = "1y") -> dict:
+    """逐檔抓日 K(預設一年)。回傳 {symbol: DataFrame}, 抓不到的不放進去。"""
     out, done = {}, 0
     with requests.Session() as s:
         s.headers.update(HEADERS)
         with ThreadPoolExecutor(max_workers=WORKERS) as ex:
-            for sym, df in ex.map(lambda x: _one(s, x), symbols):
+            for sym, df in ex.map(lambda x: _one(s, x, rng=rng), symbols):
                 done += 1
                 if df is not None:
                     out[sym] = df
@@ -152,12 +180,24 @@ def trading_days(arrs: dict) -> list:
     return sorted(o for o, n in cnt.items() if n > top * 0.5)
 
 
-def screen(arrs: dict, uni: pd.DataFrame, as_of: int | None = None) -> pd.DataFrame:
+def screen(arrs: dict, uni: pd.DataFrame, as_of: int | None = None,
+           bench=None) -> pd.DataFrame:
     """
     套用五個條件。as_of 是日期序數(date.toordinal()), 不是位置索引 ——
     每檔的 K 棒數量不同(新上市、停牌), 用「從尾端往回數 n 根」會讓同一個
     偏移量對到不同日期。市值用當下的值, Nasdaq 只給現值沒有歷史。
+
+    bench = fetch_bench() 的 (序數, 收盤)。S&P 500 的漲幅用**這檔自己的視窗**
+    算(它 21 根 K 棒前那天到今天), 跟台股一樣, 要比就比同一段。
     """
+    if bench is None:
+        raise ValueError("screen() 需要 bench(S&P 500 收盤)才能算相對強弱")
+    b_ord, b_close = bench
+
+    def b_at(o: int):
+        i = int(np.searchsorted(b_ord, o, "right")) - 1
+        return float(b_close[i]) if i >= 0 else None
+
     mc = dict(zip(uni.yahoo, uni.mcap))
     nm = dict(zip(uni.yahoo, uni.name))
     rows = []
@@ -171,14 +211,21 @@ def screen(arrs: dict, uni: pd.DataFrame, as_of: int | None = None) -> pd.DataFr
         close = cc[-1]
         turnover = close * vv[-1]
         perf = (close / cc[-PERF_DAYS - 1] - 1) * 100
+        b_now, b_base = b_at(int(dates[end - 1])), b_at(int(dates[end - PERF_DAYS - 1]))
+        if not b_now or not b_base:
+            continue
+        b_perf = (b_now / b_base - 1) * 100
+        excess = perf - b_perf
         if not (close > cc[-SMA_LONG:].mean()
                 and cc[-10:].mean() > cc[-20:].mean()
                 and turnover > MIN_TURNOVER
-                and perf > MIN_PERF):
+                and excess > MIN_EXCESS):
             continue
         rows.append({"symbol": sym, "name": clean_name(nm.get(sym)),
                      "close": round(float(close), 2),
                      "perf_1m": round(float(perf), 1),
+                     "idx_1m": round(float(b_perf), 1),     # 同期 S&P 500 漲幅
+                     "excess_1m": round(float(excess), 1),  # 超額 = 個股 - S&P 500
                      "turnover": round(turnover / 1e6, 1),
                      "mcap": round(mc.get(sym, 0) / 1e9, 2),
                      "date": dt.date.fromordinal(int(dates[end - 1])).isoformat()})
@@ -278,25 +325,32 @@ def prev_theme_counts(members: pd.DataFrame, dates: list, today_theme: dict) -> 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--backfill", action="store_true",
-                    help="連同可回補的歷史廣度一起算(一年資料約可回補 50 天)")
+                    help="連同歷史廣度與名單一起重算。抓兩年日 K, 扣掉 SMA200 的"
+                         "回看約可重算 280 天(抓一年只剩 50 天左右)")
     args = ap.parse_args()
+    rng = "2y" if args.backfill else "1y"
 
     uni = fetch_universe()
     print(f"宇宙: {len(uni)} 檔 (市值 > ${MIN_MCAP/1e6:.0f}M)")
-    bars = fetch_bars(uni.yahoo.tolist())
+    bench = fetch_bench(rng)
+    bars = fetch_bars(uni.yahoo.tolist(), rng=rng)
     if not bars:
         print("沒有取得任何日 K,中止。", file=sys.stderr)
         return 1
 
     arrs = to_arrays(bars)
     cal = trading_days(arrs)
-    picks = screen(arrs, uni, cal[-1])
+    picks = screen(arrs, uni, cal[-1], bench)
     rows = load_breadth().to_dict("records")
     mem = load_members()
     mem_rows = mem.to_dict("records")
     have_mem = set(mem["date"])
+    # 回補是「用現在的條件重算」, 所以該日的舊名單要整批換掉; 但同一天同一檔
+    # 若還在新名單裡, 當時標好的題材要留著
+    old_theme = {(r["date"], r["symbol"]): r["theme"] for r in mem_rows
+                 if isinstance(r.get("theme"), str) and r["theme"]}
+    rebuilt, new_mem = set(), []
 
-    # 一年的資料扣掉 SMA200 的回看, 大約還能往回算 50 天
     have = {r["date"] for r in rows}
     days = cal if args.backfill else cal[-1:]
     for i, o in enumerate(days, 1):
@@ -306,16 +360,27 @@ def main():
         n_uni = count_universe(arrs, o)
         if n_uni < 500:            # 該日可評估的檔數太少, 不具代表性
             continue
-        p = screen(arrs, uni, o)
+        p = screen(arrs, uni, o, bench)
         rows.append({"date": d, "count": len(p), "universe": n_uni,
                      "pct": round(len(p) / n_uni * 100, 2)})
-        # 已經有名單的日子不重建 —— 名單由歷史價格決定、不會變, 重建只會把
-        # 那天標好的題材洗成空的
-        if len(p) and d not in have_mem:
+        if args.backfill:
+            rebuilt.add(d)
+            new_mem.extend({"date": d, "symbol": sym, "theme": old_theme.get((d, sym))}
+                           for sym in (p["symbol"] if len(p) else []))
+        elif len(p) and d not in have_mem:
+            # 每日更新:已經有名單的日子不重建, 否則會把那天標好的題材洗掉
             mem_rows.extend({"date": d, "symbol": sym, "theme": None}
                             for sym in p["symbol"])
         if args.backfill and i % 20 == 0:
             print(f"  廣度回補 {i}/{len(days)} ({d}: {len(p)} 檔)", flush=True)
+    if args.backfill:
+        mem_rows = [r for r in mem_rows if r["date"] not in rebuilt] + new_mem
+        # 重算不到的舊日子(超出兩年視窗)還是舊條件, 留著會讓序列前後定義不一致
+        stale = have - rebuilt
+        if stale:
+            print(f"  丟掉 {len(stale)} 天無法用新條件重算的舊廣度", flush=True)
+            rows = [r for r in rows if r["date"] not in stale]
+            mem_rows = [r for r in mem_rows if r["date"] not in stale]
     breadth = save_breadth(pd.DataFrame(rows))
     members = save_members(pd.DataFrame(mem_rows))
 
