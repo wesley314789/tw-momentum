@@ -6,3 +6,11 @@ refs/
 
 # 回測用的加長歷史(可重新抓, 不進 repo)
 data/history_long.csv.gz
+
+# 回測/研究用的名單快取(檔名帶篩選條件指紋, 可重新產生)
+data/_bt_members_*.csv.gz
+data/index_long.csv.gz
+
+# 分析腳本輸出到 repo 根目錄的暫存結果
+/_*.txt
+/_*.csv

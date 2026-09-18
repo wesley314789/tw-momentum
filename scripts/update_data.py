@@ -42,12 +42,20 @@ MIN_RS = 70        # SEPA 的 RS 下限
 DAILY_CHG = 4.0    # 當日強勢: 漲幅下限(%)
 DAILY_VOL_RATIO = 1.5   # 當日強勢: 量比下限
 
-# 動能篩選(市場廣度用)。條件照 TradingView 那組:
-#   價格 > SMA200、SMA10 > SMA20、總市值 > 20 億、成交值 > 5000 萬、一個月績效 > 20%
+# 動能篩選(市場廣度用):
+#   價格 > SMA200、SMA10 > SMA20、總市值 > 20 億、成交值 > 5000 萬、
+#   一個月漲幅 - 大盤一個月漲幅 > 10 個百分點
+# 最後一條原本是 TradingView 那組的「一個月漲幅 > 20%」。絕對門檻的問題是它
+# 跟著大盤走:大盤一個月漲 15% 時, 只多漲 5% 的股票就能過; 大盤跌 10% 時,
+# 逆勢漲 15% 的股票反而過不了。2026-09-18 改成相對大盤, 選出的是「跑贏市場」
+# 而不是「剛好在漲的市場裡」。
 BR_MCAP = 2e9      # 總市值下限(元)
 BR_TURNOVER = 5e7  # 成交值下限(元)
-BR_PERF = 20.0     # 一個月績效下限(%)
+BR_EXCESS = 10.0   # 一個月超額報酬下限(百分點, 個股漲幅 - 加權指數漲幅)
 BR_PERF_DAYS = 21  # 「一個月」取 21 個交易日
+# 篩選條件的指紋。回測/研究腳本的名單快取檔名帶著它 —— 條件一改, 快取自然
+# 失效, 不會悄悄拿舊定義的名單去算新問題。
+SCREEN_SIG = f"x{BR_EXCESS:g}_mc{BR_MCAP:.0e}_tv{BR_TURNOVER:.0e}_d{BR_PERF_DAYS}"
 
 HEADERS = {"User-Agent": "Mozilla/5.0 (tw-momentum-scanner)"}
 
@@ -316,13 +324,35 @@ def backfill():
 
 # ---------------------------------------------------------------- 市場廣度
 
-def momentum_screen(hist: pd.DataFrame, shares: pd.DataFrame,
-                    as_of: str | None = None) -> pd.DataFrame:
+def index_lookup(idx: pd.DataFrame):
     """
-    動能篩選(TradingView 那組條件),回傳通過的個股。
+    回傳 date -> 加權指數收盤 的查詢函式。查不到當天就用之前最近一天(asof),
+    連之前都沒有就回 None。
+    """
+    s = idx.dropna(subset=["close"]).drop_duplicates("date").sort_values("date")
+    ds = s["date"].to_numpy()
+    cs = s["close"].to_numpy(dtype=float)
 
-        價格 > SMA200、SMA10 > SMA20、總市值 > BR_MCAP、
-        成交值 > BR_TURNOVER、BR_PERF_DAYS 個交易日績效 > BR_PERF%
+    def at(d: str):
+        i = ds.searchsorted(d, side="right") - 1
+        return float(cs[i]) if i >= 0 else None
+    return at
+
+
+def momentum_screen(hist: pd.DataFrame, shares: pd.DataFrame,
+                    as_of: str | None = None,
+                    idx: pd.DataFrame | None = None) -> pd.DataFrame:
+    """
+    動能篩選,回傳通過的個股。
+
+        價格 > SMA200、SMA10 > SMA20、總市值 > BR_MCAP、成交值 > BR_TURNOVER、
+        BR_PERF_DAYS 個交易日漲幅 - 同期間加權指數漲幅 > BR_EXCESS 個百分點
+
+    大盤漲幅用**這檔股票自己的視窗**算(它 21 根 K 棒前的那一天到今天), 不是固定
+    的「21 個交易日前」—— 中間停牌過的個股, 兩者的起點會不一樣, 要比就得比同一段。
+
+    idx 是加權指數收盤(date, close)。沒給就讀 data/index.csv.gz, 但那份只有
+    280 天; 回測更早的區間要自己傳涵蓋得到的序列進來。
 
     需要 200 天以上的歷史才算得出 SMA200, 所以歷史視窗前 200 天無法回補。
     """
@@ -332,6 +362,13 @@ def momentum_screen(hist: pd.DataFrame, shares: pd.DataFrame,
     if len(dates) < 200:
         return pd.DataFrame()
     today = dates[-1]
+
+    ix_at = index_lookup(idx if idx is not None else load_index_history())
+    ix_today = ix_at(today)
+    if ix_today is None:
+        # 寧可大聲失敗也不要悄悄全部算不出來 —— 那會變成「今天廣度 0 檔」,
+        # 看起來像市場崩了, 其實只是指數沒抓到。
+        raise ValueError(f"{today} 沒有加權指數收盤, 無法計算相對大盤的漲幅")
 
     sh = dict(zip(shares["code"], shares["shares"]))
     rows = []
@@ -346,18 +383,25 @@ def momentum_screen(hist: pd.DataFrame, shares: pd.DataFrame,
         if not n:
             continue
         turnover = g["value"].iloc[-1]
-        perf = (close / c[-BR_PERF_DAYS - 1] - 1) * 100 if len(c) > BR_PERF_DAYS else None
-        if perf is None:
+        if len(c) <= BR_PERF_DAYS:
             continue
+        perf = (close / c[-BR_PERF_DAYS - 1] - 1) * 100
+        ix_base = ix_at(g["date"].iloc[-BR_PERF_DAYS - 1])
+        if not ix_base:
+            continue
+        ix_perf = (ix_today / ix_base - 1) * 100
+        excess = perf - ix_perf
         if not (close > c[-200:].mean()
                 and c[-10:].mean() > c[-20:].mean()
                 and close * n > BR_MCAP
                 and turnover > BR_TURNOVER
-                and perf > BR_PERF):
+                and excess > BR_EXCESS):
             continue
         rows.append({"code": code, "name": g["name"].iloc[-1],
                      "market": g["market"].iloc[-1], "close": round(close, 2),
                      "perf_1m": round(perf, 1),
+                     "idx_1m": round(ix_perf, 1),      # 同一段期間的大盤漲幅
+                     "excess_1m": round(excess, 1),    # 超額 = 個股 - 大盤
                      "value": round(turnover / 1e8, 2),
                      "mcap": round(close * n / 1e8, 0)})
     df = pd.DataFrame(rows)
@@ -379,7 +423,8 @@ def save_breadth(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def update_breadth(hist: pd.DataFrame, shares: pd.DataFrame,
-                   backfill: bool = False) -> tuple[pd.DataFrame, pd.DataFrame]:
+                   backfill: bool = False,
+                   idx: pd.DataFrame | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     記錄每日通過動能篩選的檔數 —— 這就是市場廣度 —— 並把名單一起留下來。
 
@@ -389,6 +434,8 @@ def update_breadth(hist: pd.DataFrame, shares: pd.DataFrame,
     """
     br = load_breadth()
     mem = load_members()
+    if idx is None:
+        idx = load_index_history()     # 讀一次就好, 不要每天在迴圈裡重讀
     have = set(br["date"])
     dates = sorted(hist["date"].unique())
     todo = dates[199:] if backfill else dates[-1:]   # 前 200 天算不出 SMA200
@@ -401,7 +448,7 @@ def update_breadth(hist: pd.DataFrame, shares: pd.DataFrame,
         if d in have and not backfill:
             continue
         sub = hist[hist["date"] <= d]
-        picks = momentum_screen(sub, shares)
+        picks = momentum_screen(sub, shares, idx=idx)
         universe = int((hist["date"] == d).sum())
         rows.append({"date": d, "count": len(picks), "universe": universe,
                      "pct": round(len(picks) / universe * 100, 2) if universe else 0})
@@ -751,8 +798,9 @@ def enrich_and_write(merged: pd.DataFrame, idx_hist: pd.DataFrame | None = None)
     except Exception as e:
         print(f"發行股數抓取失敗({e.__class__.__name__}),沿用既有的。")
         shares = load_shares()
-    picks = momentum_screen(merged, shares)
-    breadth, members = update_breadth(merged, shares)
+    idx = idx_hist if idx_hist is not None else load_index_history()
+    picks = momentum_screen(merged, shares, idx=idx)
+    breadth, members = update_breadth(merged, shares, idx=idx)
     recs = [{k: (None if pd.isna(v) else v) for k, v in r.items()}
             for r in picks.to_dict("records")]
 

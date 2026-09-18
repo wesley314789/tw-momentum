@@ -38,6 +38,9 @@ import update_data as u
 
 ROOT = Path(__file__).resolve().parent.parent
 LONG_HIST = ROOT / "data" / "history_long.csv.gz"
+IDX_LONG = ROOT / "data" / "index_long.csv.gz"
+# 篩選條件是相對大盤的, 回測區間比流水線的 280 天長, 要用涵蓋得到的指數序列
+IDX = pd.read_csv(IDX_LONG) if IDX_LONG.exists() else u.load_index_history()
 
 POSITION = 10_000.0     # 每檔買進金額(元)
 R = 0.07                # 1R = 7%
@@ -84,14 +87,31 @@ def load_prices() -> pd.DataFrame:
     return df
 
 
+MEM_CACHE = ROOT / "data" / f"_bt_members_{u.SCREEN_SIG}.csv.gz"
+
+
 def membership(hist: pd.DataFrame, shares: pd.DataFrame, dates: list) -> dict:
-    """{date: set(code)} —— 每個交易日通過動能篩選的名單。"""
+    """
+    {date: set(code)} —— 每個交易日通過動能篩選的名單。
+
+    算一次要十分鐘(逐日重跑 momentum_screen), 但 R、停利規則、手續費都不影響
+    名單, 所以存起來重複用。快取涵蓋不到要求的區間時才重算。
+    """
+    if MEM_CACHE.exists():
+        c = pd.read_csv(MEM_CACHE, dtype={"date": str, "code": str})
+        have = set(c["date"].unique())
+        if set(dates) <= have:
+            print(f"  用名單快取 ({len(have)} 天)", flush=True)
+            g = c[c["date"].isin(dates)].groupby("date")["code"].apply(set)
+            return {d: g.get(d, set()) for d in dates}
     out = {}
     for i, d in enumerate(dates, 1):
-        picks = u.momentum_screen(hist[hist["date"] <= d], shares)
+        picks = u.momentum_screen(hist[hist["date"] <= d], shares, idx=IDX)
         out[d] = set(picks["code"]) if len(picks) else set()
         if i % 20 == 0:
             print(f"  篩選 {i}/{len(dates)} ({d}: {len(out[d])} 檔)", flush=True)
+    rows = [{"date": d, "code": c} for d, cs in out.items() for c in cs]
+    pd.DataFrame(rows).to_csv(MEM_CACHE, index=False, compression="gzip")
     return out
 
 
@@ -177,6 +197,11 @@ def report(o, t: pd.DataFrame, label: str, dates: list):
     if t.empty:
         o.write("沒有任何交易\n")
         return
+    dropped = t[t["reason"] == "除權息排除"]
+    t = t[t["reason"] != "除權息排除"]
+    if len(dropped):
+        o.write(f"(另有 {len(dropped)} 筆在持有期間遇到除權息/減資/面額變更, "
+                f"價格未還原權值無法評價, 已排除)\n")
     n = len(t)
     win = int((t["pnl"] > 0).sum())
     invested = n * POSITION
@@ -230,12 +255,15 @@ def main():
     ap.add_argument("--start", default="2026-01-01")
     ap.add_argument("--end", default=None)
     ap.add_argument("--out", default="_bt_out.txt")
+    ap.add_argument("--r", default="0.07",
+                    help="停損幅度, 可給多個做比較, 例如 --r 0.05,0.07,0.10,0.15")
     ap.add_argument("--smooth", action="store_true",
                     help="移動停利改用 (floor(maxR)-1)*R, 確認結論對規則邊界不敏感")
     args = ap.parse_args()
 
-    global SMOOTH
+    global SMOOTH, R
     SMOOTH = args.smooth
+    r_list = [float(x) for x in str(args.r).split(",")]
 
     hist = load_prices()
     shares = u.load_shares()
@@ -250,16 +278,39 @@ def main():
           f"{' [平滑版移動停利]' if SMOOTH else ''}", flush=True)
 
     mem = membership(hist, shares, dates)
-    scen = [
+    fee_scen = [
         ("原價手續費 + 每筆最低 20 元", dict(rate=0.001425, minimum=20.0)),
-        ("六折手續費 + 最低 1 元(電子下單零股常見)", dict(rate=0.001425 * 0.6, minimum=1.0)),
-        ("完全不計交易成本(理論上限)", dict(with_fees=False)),
+        ("六折手續費 + 最低 1 元", dict(rate=0.001425 * 0.6, minimum=1.0)),
+        ("完全不計交易成本", dict(with_fees=False)),
     ]
     with io.open(args.out, "w", encoding="utf-8") as o:
-        for label, kw in scen:
-            report(o, run(hist, mem, dates, **kw), label, dates)
-        t = run(hist, mem, dates, rate=0.001425, minimum=20.0)
-        t.to_csv("_bt_trades.csv", index=False, encoding="utf-8-sig")
+        summary = []
+        for r in r_list:
+            R = r
+            for label, kw in fee_scen:
+                t = run(hist, mem, dates, **kw)
+                report(o, t, f"1R = {r*100:.0f}%  |  {label}", dates)
+                keep = t[t["reason"] != "除權息排除"]
+                gp = keep.loc[keep.pnl > 0, "pnl"].sum()
+                gl = -keep.loc[keep.pnl <= 0, "pnl"].sum()
+                ev = pd.concat([pd.Series(1, index=pd.to_datetime(keep["entry_date"])),
+                                pd.Series(-1, index=pd.to_datetime(keep["exit_date"]))])
+                peak = int(ev.groupby(level=0).sum().sort_index().cumsum().max())
+                summary.append((r, label, len(keep), keep.pnl.sum(),
+                                keep.pnl.sum() / (peak * POSITION) * 100,
+                                (keep.pnl > 0).mean() * 100, gp / gl if gl else float("nan"),
+                                (pd.to_datetime(keep["exit_date"]) -
+                                 pd.to_datetime(keep["entry_date"])).dt.days.median()))
+            if r == r_list[0]:
+                R = r
+                run(hist, mem, dates, rate=0.001425, minimum=20.0).to_csv(
+                    "_bt_trades.csv", index=False, encoding="utf-8-sig")
+        o.write("\n\n" + "=" * 78 + "\n總覽\n" + "=" * 78 + "\n")
+        o.write(f"{'1R':>5s}  {'成本情境':<22s}{'筆數':>7s}{'總損益':>11s}"
+                f"{'對佔用本金':>11s}{'勝率':>7s}{'PF':>6s}{'持有中位':>9s}\n")
+        for r, lab, n, pnl, roc, wr, pf, hd in summary:
+            o.write(f"{r * 100:4.0f}%  {lab:<22s}{n:7d}{pnl:+11,.0f}{roc:+10.2f}%"
+                    f"{wr:6.1f}%{pf:6.2f}{hd:7.0f} 天\n")
     print(f"寫到 {args.out}")
     return 0
 
