@@ -31,6 +31,7 @@ import math
 import sys
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -122,25 +123,52 @@ def fees(amount: float, is_sell: bool, rate=None, minimum=None) -> float:
     return f + (amount * TAX_RATE if is_sell else 0.0)
 
 
-def run(hist: pd.DataFrame, members: dict, dates: list,
+def build_px(hist: pd.DataFrame) -> dict:
+    """
+    把日線攤成每檔一組 numpy 陣列 + 日期索引。
+
+    原本每跑一個情境就用 groupby + set_index 重建一次, 再用 .loc 逐日查 ——
+    掃描多個 R 值與成本情境時要重建十幾次, 期間拉到三年後這一步就變成主要成本。
+    名單、價格都跟情境無關, 建一次共用即可。
+    """
+    px = {}
+    for code, g in hist.groupby("code", sort=False):
+        g = g.sort_values("date")
+        px[code] = {
+            "i": {d: k for k, d in enumerate(g["date"].to_numpy())},
+            "o": g["open"].to_numpy(dtype=float),
+            "h": g["high"].to_numpy(dtype=float),
+            "l": g["low"].to_numpy(dtype=float),
+            "c": g["close"].to_numpy(dtype=float),
+            "x": g["_corp"].to_numpy(dtype=bool),
+            "name": g["name"].iloc[-1],
+        }
+    return px
+
+
+def run(px: dict, members: dict, dates: list,
         rate=None, minimum=None, with_fees: bool = True) -> pd.DataFrame:
-    px = {c: g.set_index("date") for c, g in hist.groupby("code")}
     trades, open_pos = [], {}
 
     for i, d in enumerate(dates):
         # --- 先處理已持有的部位 ---
         for code in list(open_pos):
             pos = open_pos[code]
-            if d not in px[code].index:
+            p = px[code]
+            k = p["i"].get(d)
+            if k is None:
                 continue                      # 停牌, 續抱
-            row = px[code].loc[d]
-            if bool(row["_corp"]):        # 除權息/減資當天:中性出場, 不計績效
+            if p["x"][k]:                 # 除權息/減資當天:中性出場, 不計績效
                 pos.update(exit_date=d, exit_px=pos["last_px"], reason="除權息排除")
                 trades.append(pos)
                 del open_pos[code]
                 continue
-            lo, hi, op, cl = (float(row["low"]), float(row["high"]),
-                              float(row["open"]), float(row["close"]))
+            lo, hi, op, cl = p["l"][k], p["h"][k], p["o"][k], p["c"][k]
+            # 開高低收偶爾有缺值(當日無成交等)。NaN 比較永遠是 False, 停損會被
+            # 靜悄悄跳過, 而 max() 碰到 NaN 會把 max_r 整個汙染成 NaN, 之後的
+            # 停利階梯就全錯。缺值就當這天沒資料, 續抱。
+            if not (np.isfinite(lo) and np.isfinite(hi) and np.isfinite(op)):
+                continue
             stop_px = pos["entry"] * (1 + stop_level(pos["max_r"]))
             if lo <= stop_px:                 # 先判停損, 不讓當日新高先把停利拉上去
                 exit_px = min(op, stop_px)    # 跳空就以開盤價出場
@@ -151,7 +179,8 @@ def run(hist: pd.DataFrame, members: dict, dates: list,
                 del open_pos[code]
                 continue
             pos["max_r"] = max(pos["max_r"], (hi / pos["entry"] - 1) / R)
-            pos["last_px"] = cl
+            if np.isfinite(cl):
+                pos["last_px"] = cl
 
         # --- 今天新進榜的, 明天開盤買 ---
         if i + 1 >= len(dates):
@@ -160,14 +189,18 @@ def run(hist: pd.DataFrame, members: dict, dates: list,
         new = members.get(d, set()) - prev
         nxt = dates[i + 1]
         for code in sorted(new):
-            if code in open_pos or code not in px or nxt not in px[code].index:
+            if code in open_pos or code not in px:
                 continue
-            entry = float(px[code].loc[nxt, "open"] or 0)
-            if entry <= 0:
+            p = px[code]
+            k = p["i"].get(nxt)
+            if k is None:
                 continue
-            open_pos[code] = dict(code=code, name=px[code].loc[nxt, "name"],
-                                  listed=d, entry_date=nxt, entry=entry,
-                                  max_r=0.0, last_px=entry,
+            entry = p["o"][k]
+            if not np.isfinite(entry) or entry <= 0:   # 缺開盤價就買不進去
+                continue
+            open_pos[code] = dict(code=code, name=p["name"],
+                                  listed=d, entry_date=nxt, entry=float(entry),
+                                  max_r=0.0, last_px=float(entry),
                                   exit_date=None, exit_px=None, reason=None)
 
     for code, pos in open_pos.items():        # 還沒出場的以最後一天收盤計
@@ -278,18 +311,30 @@ def main():
           f"{' [平滑版移動停利]' if SMOOTH else ''}", flush=True)
 
     mem = membership(hist, shares, dates)
+    px = build_px(hist)          # 建一次, 所有情境共用
     fee_scen = [
         ("原價手續費 + 每筆最低 20 元", dict(rate=0.001425, minimum=20.0)),
         ("六折手續費 + 最低 1 元", dict(rate=0.001425 * 0.6, minimum=1.0)),
         ("完全不計交易成本", dict(with_fees=False)),
     ]
     with io.open(args.out, "w", encoding="utf-8") as o:
-        summary = []
+        summary, yearly = [], []
         for r in r_list:
             R = r
-            for label, kw in fee_scen:
-                t = run(hist, mem, dates, **kw)
+            for j, (label, kw) in enumerate(fee_scen):
+                t = run(px, mem, dates, **kw)
                 report(o, t, f"1R = {r*100:.0f}%  |  {label}", dates)
+                if j == 0:                       # 逐年只看原價手續費那組
+                    y = t[t["reason"] != "除權息排除"].copy()
+                    y["年"] = y["exit_date"].str[:4]
+                    for yr, gg in y.groupby("年"):
+                        gp = gg.loc[gg.pnl > 0, "pnl"].sum()
+                        gl = -gg.loc[gg.pnl <= 0, "pnl"].sum()
+                        yearly.append((r, yr, len(gg), gg.pnl.sum(),
+                                       (gg.pnl > 0).mean() * 100,
+                                       gp / gl if gl else float("nan")))
+                    if r == r_list[0]:
+                        t.to_csv("_bt_trades.csv", index=False, encoding="utf-8-sig")
                 keep = t[t["reason"] != "除權息排除"]
                 gp = keep.loc[keep.pnl > 0, "pnl"].sum()
                 gl = -keep.loc[keep.pnl <= 0, "pnl"].sum()
@@ -301,10 +346,10 @@ def main():
                                 (keep.pnl > 0).mean() * 100, gp / gl if gl else float("nan"),
                                 (pd.to_datetime(keep["exit_date"]) -
                                  pd.to_datetime(keep["entry_date"])).dt.days.median()))
-            if r == r_list[0]:
-                R = r
-                run(hist, mem, dates, rate=0.001425, minimum=20.0).to_csv(
-                    "_bt_trades.csv", index=False, encoding="utf-8-sig")
+        o.write("\n\n" + "=" * 78 + "\n逐年(原價手續費 + 每筆最低 20 元)\n" + "=" * 78 + "\n")
+        o.write(f"{'1R':>5s}{'年份':>7s}{'筆數':>7s}{'總損益':>11s}{'勝率':>8s}{'PF':>7s}\n")
+        for r, yr, n, pnl, wr, pf in yearly:
+            o.write(f"{r * 100:4.0f}%{yr:>7s}{n:7d}{pnl:+11,.0f}{wr:7.1f}%{pf:7.2f}\n")
         o.write("\n\n" + "=" * 78 + "\n總覽\n" + "=" * 78 + "\n")
         o.write(f"{'1R':>5s}  {'成本情境':<22s}{'筆數':>7s}{'總損益':>11s}"
                 f"{'對佔用本金':>11s}{'勝率':>7s}{'PF':>6s}{'持有中位':>9s}\n")
