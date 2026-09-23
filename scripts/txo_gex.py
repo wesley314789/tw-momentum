@@ -36,6 +36,7 @@ from scipy.stats import norm
 ROOT = Path(__file__).resolve().parent.parent
 HISTORY_PATH = ROOT / "data" / "gex_history.csv"
 OUTPUT_PATH = ROOT / "docs" / "data" / "gex_latest.json"
+DEBUG_PATH = ROOT / "docs" / "data" / "gex_debug.json"
 KEEP_DAYS = 280           # 與股票那邊的滾動視窗一致
 
 TPE = dt.timezone(dt.timedelta(hours=8))
@@ -349,22 +350,31 @@ def build_chain(day_df: pd.DataFrame, trade_date: dt.date) -> list[dict]:
         merged = c.merge(p, on="K", how="outer").fillna(0)
         merged = merged[(merged["oi_c"] + merged["oi_p"]) >= MIN_OI]
 
-        ivs = []
+        ivs, ivs_c, ivs_p = [], [], []
         for _, row in merged.iterrows():
             K = float(row["K"])
             iv_c = implied_vol(row["px_c"], F, K, T, RISK_FREE, True)
             iv_p = implied_vol(row["px_p"], F, K, T, RISK_FREE, False)
             pair = [x for x in (iv_c, iv_p) if not np.isnan(x)]
             ivs.append(float(np.mean(pair)) if pair else np.nan)
+            ivs_c.append(iv_c)
+            ivs_p.append(iv_p)
         merged["iv"] = ivs
+        merged["iv_c"] = ivs_c
+        merged["iv_p"] = ivs_p
 
         if IV_FALLBACK == "atm":
             atm_iv = merged.loc[(merged["K"] - F).abs().nsmallest(3).index, "iv"].mean()
             merged["iv"] = merged["iv"].fillna(atm_iv)
+            # Concentration 模型分開保留 call/put gamma。單邊 IV 無法反推時才回退到
+            # 原模型使用的平均 IV；signed GEX 仍使用 iv，確保舊結果不變。
+            merged["iv_c"] = merged["iv_c"].fillna(merged["iv"])
+            merged["iv_p"] = merged["iv_p"].fillna(merged["iv"])
         merged = merged.dropna(subset=["iv"])
 
         for _, row in merged.iterrows():
             chain.append(dict(K=float(row["K"]), T=T, iv=float(row["iv"]),
+                              iv_c=float(row["iv_c"]), iv_p=float(row["iv_p"]),
                               oi_c=float(row["oi_c"]), oi_p=float(row["oi_p"])))
 
     # 用近月的 F 當作全域參考價 (最接近你實際交易的近月期貨)
@@ -432,10 +442,77 @@ def gex_at(F_sim: float, chain: list[dict]) -> float:
 
 
 def gex_by_strike(F: float, chain: list[dict]) -> pd.DataFrame:
+    """舊 signed GEX：隱含 Dealer long call / short put 的方向假設。"""
     K, T, iv, net, gross = chain_arrays(chain)
     base = gamma_matrix(F, K, T, iv)[0] * MULTIPLIER * F ** 2 * 0.01
     return pd.DataFrame({"K": K, "net": base * net, "gross": base * gross}) \
              .groupby("K", as_index=False).sum()
+
+
+def gamma_concentration_by_strike(F: float, chain: list[dict]) -> pd.DataFrame:
+    """不推測 Dealer 方向，分開量出 Call/Put 的 gamma × OI 集中度。
+
+    total_gamma_concentration 依規格定義為 Call - Put；cluster_concentration
+    則是 Call + Put，只用來回答「總量最集中在哪裡」，不帶方向解讀。
+    call_gamma/put_gamma 是同一履約價跨到期日、以各自 OI 加權的平均單口 gamma。
+    """
+    rows = []
+    for c in chain:
+        call_gamma = abs(b76_gamma(F, c["K"], c["T"], c.get("iv_c", c["iv"]),
+                                       RISK_FREE))
+        put_gamma = abs(b76_gamma(F, c["K"], c["T"], c.get("iv_p", c["iv"]),
+                                      RISK_FREE))
+        scale = MULTIPLIER * F ** 2 * 0.01
+        call_conc = c["oi_c"] * call_gamma * scale
+        put_conc = c["oi_p"] * put_gamma * scale
+        # signed_gex 刻意沿用舊模型的平均 IV，方便逐 strike 對帳舊結果。
+        signed_gamma = b76_gamma(F, c["K"], c["T"], c["iv"], RISK_FREE)
+        rows.append({
+            "strike": c["K"], "call_oi": c["oi_c"], "put_oi": c["oi_p"],
+            "call_gamma_num": call_gamma * c["oi_c"],
+            "put_gamma_num": put_gamma * c["oi_p"],
+            "call_gamma_concentration": call_conc,
+            "put_gamma_concentration": put_conc,
+            "signed_gex": signed_gamma * (c["oi_c"] - c["oi_p"]) * scale,
+        })
+    if not rows:
+        return pd.DataFrame(columns=[
+            "strike", "call_oi", "put_oi", "call_gamma", "put_gamma",
+            "call_gamma_concentration", "put_gamma_concentration",
+            "total_gamma_concentration", "cluster_concentration", "signed_gex"])
+    out = pd.DataFrame(rows).groupby("strike", as_index=False).sum()
+    out["call_gamma"] = np.divide(
+        out.pop("call_gamma_num"), out["call_oi"],
+        out=np.zeros(len(out)), where=out["call_oi"].to_numpy() > 0)
+    out["put_gamma"] = np.divide(
+        out.pop("put_gamma_num"), out["put_oi"],
+        out=np.zeros(len(out)), where=out["put_oi"].to_numpy() > 0)
+    out["total_gamma_concentration"] = (
+        out["call_gamma_concentration"] - out["put_gamma_concentration"])
+    out["cluster_concentration"] = (
+        out["call_gamma_concentration"] + out["put_gamma_concentration"])
+    return out.sort_values("strike").reset_index(drop=True)
+
+
+def concentration_levels(by_k: pd.DataFrame, F: float) -> dict:
+    """純 concentration 位階；不使用 Dealer long/short 假設。"""
+    if by_k.empty:
+        return {}
+    net_peak = by_k["total_gamma_concentration"].abs().idxmax()
+    call_peak = by_k["call_gamma_concentration"].idxmax()
+    put_peak = by_k["put_gamma_concentration"].idxmax()
+    cluster_peak = by_k["cluster_concentration"].idxmax()
+    return {
+        "concentration_peak": float(by_k.loc[net_peak, "strike"]),
+        "concentration_peak_value": float(by_k.loc[net_peak, "total_gamma_concentration"]),
+        "concentration_valley": find_concentration_valley(by_k, F),
+        "call_concentration_peak": float(by_k.loc[call_peak, "strike"]),
+        "call_concentration_value": float(by_k.loc[call_peak, "call_gamma_concentration"]),
+        "put_concentration_peak": float(by_k.loc[put_peak, "strike"]),
+        "put_concentration_value": float(by_k.loc[put_peak, "put_gamma_concentration"]),
+        "gamma_cluster_strike": float(by_k.loc[cluster_peak, "strike"]),
+        "gamma_cluster_value": float(by_k.loc[cluster_peak, "cluster_concentration"]),
+    }
 
 
 def regime_label(gex_now: float, net_ratio: float) -> str:
@@ -473,15 +550,23 @@ def find_valley(by_k: pd.DataFrame, F: float) -> float:
     return float(x[troughs].max())    # 下方離現價最近的谷 = 履約價最大的那個
 
 
+def find_concentration_valley(by_k: pd.DataFrame, F: float) -> float:
+    """總 Call+Put concentration 的現價下方局部低點，不推論突破後會加速。"""
+    renamed = by_k.rename(columns={"strike": "K", "cluster_concentration": "gross"})
+    return find_valley(renamed[["K", "gross"]], F)
+
+
 def compute_levels(chain: list[dict], F: float) -> dict:
     if not chain:
         return {}
 
     by_k = gex_by_strike(F, chain)
+    concentration = gamma_concentration_by_strike(F, chain)
     above = by_k[by_k["K"] > F]
     below = by_k[by_k["K"] < F]
 
     lv = {"F": round(F, 1)}
+    lv.update(concentration_levels(concentration, F))
     lv["call_wall"] = float(above.loc[above["net"].idxmax(), "K"]) if len(above) else np.nan
     lv["put_wall"]  = float(below.loc[below["net"].idxmin(), "K"]) if len(below) else np.nan
     lv["peak"]      = float(by_k.loc[by_k["gross"].idxmax(), "K"])
@@ -573,7 +658,32 @@ def prepare(raw: pd.DataFrame) -> pd.DataFrame:
 
 HIST_COLS = ["date", "dow", "is_settle", "F", "txf_settle", "txf_close",
              "txf_oi", "txf_night", "call_wall", "put_wall", "peak",
-             "valley", "micro_flip", "macro_zero", "gex_now", "net_ratio", "regime"]
+             "valley", "concentration_peak", "concentration_valley",
+             "concentration_peak_value",
+             "call_concentration_peak", "put_concentration_peak",
+             "call_concentration_value", "put_concentration_value",
+             "gamma_cluster_strike", "gamma_cluster_value",
+             "micro_flip", "macro_zero", "gex_now",
+             "net_ratio", "regime"]
+
+
+def write_gamma_debug(trade_date: dt.date, F: float, chain: list[dict],
+                      *, log: bool = False) -> list[dict]:
+    """寫出最新逐履約價的兩套模型明細，供檢查但不塞進歷史 CSV。"""
+    detail = gamma_concentration_by_strike(F, chain)
+    cols = ["strike", "call_oi", "put_oi", "call_gamma", "put_gamma",
+            "call_gamma_concentration", "put_gamma_concentration",
+            "total_gamma_concentration", "signed_gex"]
+    detail = detail[cols].copy()
+    records = [{k: (None if pd.isna(v) else float(v)) for k, v in row.items()}
+               for row in detail.to_dict("records")]
+    payload = {"date": trade_date.isoformat(), "F": float(F), "strikes": records}
+    DEBUG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    DEBUG_PATH.write_text(json.dumps(payload, ensure_ascii=False, allow_nan=False),
+                          encoding="utf-8")
+    if log:
+        print(detail.to_string(index=False))
+    return records
 
 
 def merge_txf(rows: list[dict], txf: pd.DataFrame) -> list[dict]:
@@ -622,7 +732,9 @@ def compute_day(day_df: pd.DataFrame, trade_date: dt.date) -> dict | None:
 def backfill(start: dt.date, end: dt.date):
     """回補指定期間的每日 GEX 位階。期交所單次查詢上限約一個月,故按月切片。"""
     hist = load_history()
-    have = set(hist["date"].unique())
+    have = set(hist.loc[hist.get("concentration_peak", pd.Series(index=hist.index,
+                                                                  dtype=float)).notna(),
+                        "date"].unique())
     rows = hist.to_dict("records")
 
     raw = fetch_chunked(start, end)
@@ -632,6 +744,7 @@ def backfill(start: dt.date, end: dt.date):
     for trade_date, day_df in df.groupby("_trade_date"):
         if trade_date.isoformat() in have:
             continue
+        rows = [r for r in rows if r.get("date") != trade_date.isoformat()]
         try:
             lv = compute_day(day_df, trade_date)
         except Exception as e:
@@ -696,11 +809,15 @@ def daily_update():
         return False
 
     hist = load_history()
-    have = set(hist["date"].unique())
+    # 舊歷史沒有 concentration 欄位時，最近七天會自動補算，不需刪檔重來。
+    have = set(hist.loc[hist.get("concentration_peak", pd.Series(index=hist.index,
+                                                                  dtype=float)).notna(),
+                        "date"].unique())
     rows = hist.to_dict("records")
     for trade_date, day_df in df.groupby("_trade_date"):
         if trade_date.isoformat() in have:
             continue
+        rows = [r for r in rows if r.get("date") != trade_date.isoformat()]
         lv = compute_day(day_df, trade_date)
         if lv:
             rows.append(lv)
@@ -716,6 +833,10 @@ def daily_update():
         return False
 
     latest = merged.sort_values("date").iloc[-1].to_dict()
+    latest_day = dt.date.fromisoformat(latest["date"])
+    latest_chain, latest_F = build_chain(df[df["_trade_date"] == latest_day], latest_day)
+    if latest_chain and latest_F is not None:
+        write_gamma_debug(latest_day, latest_F, latest_chain)
     # 盤前快照不進歷史檔:它是「還沒收盤的那天」的暫時狀態, 等當日 OI 出來
     # 之後就會被真正的位階取代。
     pre = preopen_snapshot(df, txf, latest["date"])
@@ -743,6 +864,8 @@ def main():
                     help="回補約 280 個交易日的歷史 GEX 資料")
     ap.add_argument("--start", type=str, help="回補起始日(配合 --backfill)")
     ap.add_argument("--end", type=str, help="回補結束日(配合 --backfill,預設今天)")
+    ap.add_argument("--debug", type=str,
+                    help="重算指定日期並列出每個履約價的 concentration / signed GEX")
     args = ap.parse_args()
 
     if args.probe:
@@ -750,6 +873,15 @@ def main():
         raw = fetch_range(d, d)
         print("欄位:", list(raw.columns))
         print(raw.head(12).to_string())
+        return
+
+    if args.debug:
+        day = dt.date.fromisoformat(args.debug)
+        df = prepare(fetch_range(day, day))
+        chain, F = build_chain(df[df["_trade_date"] == day], day)
+        if not chain or F is None:
+            ap.error(f"{day} 沒有可計算的 TXO 資料")
+        write_gamma_debug(day, F, chain, log=True)
         return
 
     if args.backfill:

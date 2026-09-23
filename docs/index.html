@@ -111,6 +111,11 @@ footer{max-width:1080px;margin:0 auto 40px;padding:0 24px;
 .gex-row.flip .lbl{color:var(--text)}
 .gex-row .sub{font-size:11px;color:var(--muted);margin-left:6px}
 .gex-meta{margin-top:12px;font-size:11px;color:var(--muted)}
+.gex-model{margin-top:14px;padding-top:12px;border-top:1px solid var(--line)}
+.gex-model:first-of-type{margin-top:0;padding-top:0;border-top:0}
+.gex-model-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px}
+.gex-model-head h3{font-size:12px;letter-spacing:.04em}
+.gex-model-desc{font-size:11px;color:var(--muted)}
 /* 市場廣度 */
 .br-head{display:flex;align-items:flex-end;gap:24px;flex-wrap:wrap;
   padding:16px 0 12px}
@@ -203,11 +208,24 @@ footer{max-width:1080px;margin:0 auto 40px;padding:0 24px;
 <section class="gex-card" id="gex-card" hidden>
   <div class="gex-box">
     <div class="gex-head">
-      <h2>台指期 GEX 位階</h2>
+      <h2>台指選擇權 Gamma 結構</h2>
       <span class="gex-f">台指期 <b id="gex-F"></b></span>
-      <span class="gex-regime" id="gex-regime-badge"></span>
     </div>
-    <div class="gex-ladder" id="gex-ladder"></div>
+    <div class="gex-model">
+      <div class="gex-model-head">
+        <h3>Gamma Concentration</h3>
+        <span class="gex-model-desc">只看 Call／Put OI × |Gamma|，不推測 Dealer 多空</span>
+      </div>
+      <div class="gex-ladder" id="concentration-ladder"></div>
+    </div>
+    <div class="gex-model">
+      <div class="gex-model-head">
+        <h3>Signed GEX Model</h3>
+        <span class="gex-regime" id="gex-regime-badge"></span>
+        <span class="gex-model-desc">假設 Dealer long Call／short Put</span>
+      </div>
+      <div class="gex-ladder" id="gex-ladder"></div>
+    </div>
     <div class="gex-meta" id="gex-meta"></div>
     <div class="gex-note">
       <b>278 個交易日的實測:這些位階對交易決策幫助有限。</b>
@@ -220,8 +238,8 @@ footer{max-width:1080px;margin:0 auto 40px;padding:0 24px;
       43 個交易日中僅 <b>5%</b> 成立(自營商 95% 的日子是<b>淨買 put</b>,台灣散戶
       賣 put 收租,與美股結構相反)。
       <br><br>
-      真正不依賴任何假設、也不需要驗證的是<b>山頂/山谷/gamma 集中位置</b> ——
-      那是「未平倉壓在哪裡」的事實陳述。詳見 repo 的 README。
+      Gamma Concentration 只描述部位集中位置；Signed GEX 的 Flip、Zero、Regime
+      則依賴 Dealer 方向假設。兩者不能互相解讀。詳見 repo 的 README。
     </div>
   </div>
 </section>
@@ -642,15 +660,21 @@ fetch("./data/us_latest.json")
   })
   .catch(()=>{});
 
-const GEX_LEVELS = [
-  {k:"call_wall",  label:"Call Wall",   sub:"上方壓力"},
-  {k:"macro_zero", label:"Macro Zero",  sub:"僅計 >7 天合約 †"},
-  {k:"peak",       label:"山頂 Peak",   sub:"造市商厚牆"},
-  {k:"micro_flip", label:"Micro Flip",  sub:"正負 Gamma 分界 †", flip:true},
-  {k:"valley",     label:"山谷 Valley", sub:"加速真空帶"},
-  {k:"put_wall",   label:"Put Wall",    sub:"下方支撐"},
+const CONCENTRATION_LEVELS = [
+  {k:"gamma_cluster_strike", label:"最強 Gamma Cluster", sub:"Call + Put 集中總量", v:"gamma_cluster_value"},
+  {k:"call_concentration_peak", label:"Call Concentration", sub:"Call OI × |Gamma| 峰值", v:"call_concentration_value"},
+  {k:"put_concentration_peak", label:"Put Concentration", sub:"Put OI × |Gamma| 峰值", v:"put_concentration_value"},
+  {k:"concentration_peak", label:"Net Concentration Peak", sub:"|Call − Put| 最大", v:"concentration_peak_value"},
+  {k:"concentration_valley", label:"Concentration Valley", sub:"Call + Put 的局部低點"},
+];
+const SIGNED_GEX_LEVELS = [
+  {k:"call_wall",  label:"Signed Call Wall", sub:"依賴方向假設"},
+  {k:"macro_zero", label:"Signed Macro Zero", sub:"僅計 >7 天合約", flip:true},
+  {k:"micro_flip", label:"Signed Micro Flip", sub:"正負 GEX 零軸", flip:true},
+  {k:"put_wall",   label:"Signed Put Wall", sub:"依賴方向假設"},
 ];
 const fmtPts = v => v==null ? "—" : Math.round(v).toLocaleString("en");
+const fmtConc = v => v==null ? "" : ` · ${Math.abs(v)>=1e9?(v/1e9).toFixed(2)+"B":(v/1e6).toFixed(1)+"M"}`;
 
 fetch("./data/gex_latest.json")
   .then(r=>{ if(!r.ok) throw new Error(r.status); return r.json(); })
@@ -675,7 +699,21 @@ fetch("./data/gex_latest.json")
       + (pre ? `(以 ${d.date} 的 OI 結構、${d.preopen_date} 夜盤價重算)` : "");
     // 錨點:盤前用剛收的夜盤價(市場現在的位置),否則用當日台指期結算價
     const anchor = pre ? d.preopen_price : (d.txf_settle ?? d.F);
-    const items = GEX_LEVELS
+    const concentrationItems = CONCENTRATION_LEVELS
+      .filter(t => d[t.k] != null)
+      .map(t => ({price:d[t.k], label:t.label,
+                  sub:t.sub + fmtConc(t.v ? d[t.v] : null), cls:""}));
+    concentrationItems.sort((a,b) => b.price - a.price);
+    $("concentration-ladder").innerHTML = concentrationItems.map(it=>{
+      const dz = it.price===anchor ? ""
+        : (it.price>anchor?"+":"") + Math.round(it.price-anchor).toLocaleString("en");
+      return `<div class="gex-row ${it.cls}">
+        <div class="lbl">${it.label}<span class="sub">${it.sub}</span></div>
+        <div class="px">${fmtPts(it.price)}</div>
+        <div class="dz">${dz}</div></div>`;
+    }).join("") || `<div class="gex-meta">等待下一次資料更新後產生</div>`;
+
+    const items = SIGNED_GEX_LEVELS
       .filter(t => d[t.k] != null)
       .map(t => ({price:d[t.k], label:t.label, sub:t.sub, cls:t.flip?"flip":""}));
     if (pre)

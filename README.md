@@ -5,7 +5,7 @@
 - **SEPA Trend Template** — Minervini 七條件 + RS Rating(相對大盤超額報酬,全市場百分位 1–99)
 - **當日強勢** — 漲幅 ≥ 4%、量比 ≥ 1.5、成交值 ≥ 1 億
 
-同時每日重建台指選擇權(TXO)的 **GEX 位階**(Call Wall / Put Wall / 山頂 / 山谷 / Micro Flip / Macro Zero),座標為期貨遠期價。
+同時每日重建台指選擇權(TXO)的 **Gamma 結構**：不推測 Dealer 方向的 Gamma Concentration，以及保留原假設的 Signed GEX；座標為期貨遠期價。
 
 > ⚠️ **先讀這個**:GEX 位階經過 278 個交易日的實測,**對交易決策幫助有限** —— 牆的彈回率與隨機位階無異、flip 當觸發點沒有方向性、唯一顯著的波動訊號已被隱含波動率定價完。詳見〈[實測結果](#-實測結果這些位階對交易決策幫助有限)〉。有價值的是「gamma/OI 集中在哪裡」這個事實陳述本身。
 
@@ -145,15 +145,33 @@ theme 填 **`-`** 代表「讀過本文、確定是個股因素或投機,不屬�
 
 ## GEX 位階
 
-用 TXO(台指選擇權)每日結算價,透過買賣權平價反推期貨遠期價(基差自動內含,不必另抓加權指數估股利率),Black-76 反推 IV 後計算全鏈 dollar gamma,標出六個關鍵價位:
+用 TXO(台指選擇權)每日結算價,透過買賣權平價反推期貨遠期價(基差自動內含,不必另抓加權指數估股利率),Black-76 反推 IV。輸出分成兩套模型，不能混用:
+
+### Gamma Concentration（不推測 Dealer 方向）
+
+- `gamma_concentration_by_strike()` 分開計算 `CallOI × |CallGamma|` 與 `PutOI × |PutGamma|`
+- `total_gamma_concentration = Call concentration - Put concentration`，表示兩邊相對集中程度，不代表 Dealer 正負 Gamma
+- `cluster_concentration = Call concentration + Put concentration`，用來找最強 clustering strike
+- **Concentration Peak** 是 `|Call-Put|` 最大處；**Concentration Valley** 是 Call+Put 總量的局部低點
+- **Call / Put Concentration Peak** 分別顯示兩邊最集中的履約價
+
+最新逐履約價明細寫在 `docs/data/gex_debug.json`。也可執行
+`python scripts/txo_gex.py --debug YYYY-MM-DD`，欄位包含 strike、Call/Put OI、
+Call/Put gamma、兩邊 concentration、淨 concentration 與舊 signed GEX。
+
+### Signed GEX（依賴 Dealer positioning assumption）
+
+原模型完整保留，仍以 Dealer long Call / short Put 為假設，產生:
 
 - **Call Wall / Put Wall** — 現價上/下方 net gamma 最大的履約價
-- **山頂 Peak** — gross gamma 最大的履約價
-- **山谷 Valley** — 現價下方兩個量能區之間的凹陷(跌破後容易加速的真空帶)
 - **Micro Flip** — 總 GEX 由負轉正/正轉負的價位(全部到期日)
 - **Macro Zero** — 同上,但只用到期日 > 7 天的合約
 
-山谷是找**局部**低點,不是區間最小值 —— gross gamma 隨著遠離價平單調衰減,取全域最小會永遠落在掃描窗最外緣那根空履約價上。實作先把履約價分箱(近月有 50 點檔,量能遠小於百點檔,不分箱會每根都被誤判成谷),再用 prominence 篩深度。找不到夠深的谷就回空值,不硬給數字;指數水位越低、掃描窗內格數越少,越容易出現空值(實測空值率與指數水位相關 -0.88)。
+`gex_curve()`、`gex_at()`、`gex_by_strike()`、`regime_label()` 與 Call/Put Wall、
+Micro Flip、Macro Zero、regime 都依賴這個方向假設。Gamma Peak 不等於 Gamma Flip；
+程式不會把突破 Concentration Peak 解讀成正負 Gamma 切換。
+
+Concentration Valley 找**Call+Put concentration 的局部低點**,不是區間最小值 —— gamma 隨著遠離價平單調衰減,取全域最小會永遠落在掃描窗最外緣那根空履約價上。實作先把履約價分箱(近月有 50 點檔,量能遠小於百點檔,不分箱會每根都被誤判成谷),再用 prominence 篩深度。找不到夠深的谷就回空值,不硬給數字。這只表示集中度較低，不自動解讀為跌破後加速。
 
 `regime` 為正代表造市商避險行為傾向壓抑價格波動,為負則傾向放大波動。多空 gamma 幾乎抵銷時會標 **neutral** —— 判斷依據是 `net_ratio`(淨 gamma / 總 gamma),低於 `NEUTRAL_RATIO` 就不給正負。這個門檻有實測依據:`net_ratio` ≤ 0.05 的日子,正負號隔日翻面率是 63~65%(比擲銅板還糟),跨過 0.05 掉到 36%,超過 0.2 只剩 12.5%。
 
@@ -192,7 +210,7 @@ theme 填 **`-`** 代表「讀過本文、確定是個股因素或投機,不屬�
 
 **所以這套東西實際能用的是什麼:**
 
-- ✅ **gamma / OI 集中在哪裡** —— 這是事實陳述,不需要驗證,也不依賴任何行為假設(山頂、山谷、剖面)
+- ✅ **gamma / OI 集中在哪裡** —— 這是不依賴 Dealer 多空假設的結構描述(Concentration Peak、Valley、剖面)，不等於可交易的支撐壓力
 - ⚠️ 想知道「今天預期會不會震」,**直接看 ATM IV 就好**,不必繞一圈算 GEX
 - ❌ 把牆當支撐壓力、把 flip 當觸發點 —— 資料完全不支持
 
@@ -216,11 +234,14 @@ GEX 的符號採靜態假設:**造市商 long call / short put**(`net = oi_c - o
 
 | 輸出 | 依賴符號假設 | 狀態 |
 |---|---|---|
-| 山頂 Peak、山谷 Valley | ❌ 用 gross(`oi_c + oi_p`),不涉及誰長誰短 | ✅ 有效 |
+| Concentration Peak / Valley、Call / Put Concentration、最強 Cluster | ❌ 分開使用 Call/Put `OI × |Gamma|` | ✅ 描述集中位置 |
 | gamma×OI 剖面、`F`、基差 | ❌ | ✅ 有效 |
 | Call Wall / Put Wall | ⚠️ 部分(現價上方 put OI 本來就少,下方 call OI 也少) | 🟡 大致可用,實測 8 天中 5-7 天與單邊定義同解 |
 | Micro Flip、Macro Zero | ✅ 零軸穿越完全靠符號 | ❌ 不可信 |
 | `regime` 正/負 Gamma 判定 | ✅ | ❌ 不可信 |
+
+前端也分成兩區：**Gamma Concentration** 顯示純集中度位階；**Signed GEX Model**
+顯示 Wall、Flip、Zero 與 Regime，並明標 Dealer 方向假設。
 
 **不能只是把 put 的符號翻過來** —— 那會讓 `net` 等於 `gross`、永遠是正的,Micro Flip 直接不存在。真正的問題是我們對每個履約價套用同一個符號,但實際的長短分布因履約價而異。要修好需要**逐履約價的流量歸屬**(判斷每筆成交打在買價還賣價),那需要 tick 資料。
 
