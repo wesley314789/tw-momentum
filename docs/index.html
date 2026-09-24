@@ -661,6 +661,8 @@ fetch("./data/us_latest.json")
   .catch(()=>{});
 
 const CONCENTRATION_LEVELS = [
+  {k:"peak", label:"山頂 Peak（原版）", sub:"Call + Put gross gamma 最大；沿用原本 IV 算法"},
+  {k:"valley", label:"山谷 Valley（原版）", sub:"原本 gross gamma 的局部低點"},
   {k:"gamma_cluster_strike", label:"最強 Gamma Cluster", sub:"Call + Put 集中總量", v:"gamma_cluster_value"},
   {k:"call_concentration_peak", label:"Call Concentration", sub:"Call OI × |Gamma| 峰值", v:"call_concentration_value"},
   {k:"put_concentration_peak", label:"Put Concentration", sub:"Put OI × |Gamma| 峰值", v:"put_concentration_value"},

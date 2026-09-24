@@ -149,6 +149,7 @@ theme 填 **`-`** 代表「讀過本文、確定是個股因素或投機,不屬�
 
 ### Gamma Concentration（不推測 Dealer 方向）
 
+- 原本的 `peak`（山頂）與 `valley`（山谷）仍保留在此區，沿用舊 `gross = (CallOI + PutOI) × Gamma` 和共用 IV 的算法；`concentration_peak`、`concentration_valley` 則是新模型結果，兩者可能不同
 - `gamma_concentration_by_strike()` 分開計算 `CallOI × |CallGamma|` 與 `PutOI × |PutGamma|`
 - `total_gamma_concentration = Call concentration - Put concentration`，表示兩邊相對集中程度，不代表 Dealer 正負 Gamma
 - `cluster_concentration = Call concentration + Put concentration`，用來找最強 clustering strike
