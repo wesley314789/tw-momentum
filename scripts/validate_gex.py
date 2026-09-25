@@ -11,9 +11,13 @@ validate_gex.py — 驗證 GEX 位階到底有沒有預測力
 空頭環境下結論未必相同。之後資料累積更多可以再跑一次:
 
     python scripts/validate_gex.py
+    python scripts/validate_gex.py --basis-compare
+    python scripts/validate_gex.py --basis-compare --ohlc-cache path/to/tx_ohlc.csv
 
-需要 scipy。會重抓選擇權資料算 IV, 跑一次約 5~10 分鐘。
+需要 scipy。預設模式會重抓選擇權資料算 IV, 跑一次約 5~10 分鐘；
+--basis-compare 只抓台指期 OHLC，原始與換算位階使用同一批交易日。
 """
+import argparse
 import datetime as dt
 import sys
 from pathlib import Path
@@ -46,7 +50,8 @@ def fetch_ohlc(start: dt.date, end: dt.date) -> pd.DataFrame:
             for day, grp in d.groupby("_date"):
                 m = grp.loc[grp["未沖銷契約數"].idxmax()]      # 主力月 = OI 最大
                 rows.append({"date": day.isoformat(), "high": m["最高價"],
-                             "low": m["最低價"], "close": m["收盤價"]})
+                             "low": m["最低價"], "close": m["收盤價"],
+                             "contract": str(m["到期月份(週別)"]).strip()})
         cur = nxt + dt.timedelta(days=1)
     return pd.DataFrame(rows).drop_duplicates("date")
 
@@ -74,14 +79,119 @@ def head(title):
     print("=" * 66)
 
 
+def compare_basis(h: pd.DataFrame, ohlc: pd.DataFrame) -> None:
+    """Compare raw option levels with a same-day-basis TX translation.
+
+    The basis is fixed at day t: TX settlement(t) - option implied F(t).
+    No next-day price is used to construct levels. Exclude main-contract rolls
+    because tomorrow's OHLC would otherwise refer to a different contract.
+    """
+    d = h.merge(ohlc, on="date", how="inner").sort_values("date").reset_index(drop=True)
+    for c in ("high", "low", "close", "contract"):
+        d["next_" + c] = d[c].shift(-1)
+    d["following_close"] = d["close"].shift(-2)
+    d["following_contract"] = d["contract"].shift(-2)
+    d = d.dropna(subset=["F", "txf_settle", "call_wall", "put_wall", "micro_flip",
+                         "next_high", "next_low", "next_close"])
+    n_roll = int((d.contract != d.next_contract).sum())
+    d = d[d.contract == d.next_contract].copy()
+    d = d[d.call_wall > d.put_wall].copy()
+    if d.empty:
+        raise ValueError("No usable same-contract days to compare")
+
+    d["basis"] = d.txf_settle - d.F
+    width = d.call_wall - d.put_wall
+    rng = np.random.default_rng(0)
+    shifts = rng.uniform(-SHIFT, SHIFT, (N_SHUFFLE, len(d))) * width.to_numpy()
+
+    def metrics(cw, pw):
+        cw, pw = np.asarray(cw), np.asarray(pw)
+        high, low, close = (d[x].to_numpy() for x in ("next_high", "next_low", "next_close"))
+        touch_call, touch_put = high >= cw, low <= pw
+        touches = int(touch_call.sum() + touch_put.sum())
+        returns = int((touch_call & (close < cw)).sum() +
+                      (touch_put & (close > pw)).sum())
+        inside = int(((close >= pw) & (close <= cw)).sum())
+        return touches, returns, inside
+
+    print(f"Paired days: {len(d)} ({d.date.min()} to {d.date.max()}); excluded rolls: {n_roll}")
+    print(f"Basis TX settle - option F: median {d.basis.median():+.0f} pts, "
+          f"range {d.basis.min():+.0f} to {d.basis.max():+.0f} pts")
+    print("All results below use the next trading day's main-contract OHLC.")
+    print("Model | touches | return inside after touch | next close inside band | random-shift inside percentile")
+    band_results = {}
+    for name, offset in (("Raw option strikes", np.zeros(len(d))),
+                         ("Basis-adjusted TX", d.basis.to_numpy()),
+                         ("TX-centered same-width", d.txf_settle.to_numpy() -
+                          (d.call_wall.to_numpy() + d.put_wall.to_numpy()) / 2)):
+        cw, pw = d.call_wall.to_numpy() + offset, d.put_wall.to_numpy() + offset
+        touches, returns, inside = metrics(cw, pw)
+        band_results[name] = ((d.next_close.to_numpy() >= pw) &
+                              (d.next_close.to_numpy() <= cw))
+        null_inside = np.array([metrics(cw + s, pw + s)[2] for s in shifts])
+        null_return = [metrics(cw + s, pw + s)[:2] for s in shifts]
+        null_return = np.array([r / n for n, r in null_return if n])
+        print(f"{name:23} | {touches:7d} | {returns}/{touches} "
+              f"({returns/touches:.1%}) | {inside}/{len(d)} ({inside/len(d):.1%}) | "
+              f"{(null_inside < inside).mean():.1%} "
+              f"(null mean {null_inside.mean()/len(d):.1%}); "
+              f"touch-return null {null_return.mean():.1%}")
+
+    adjusted = band_results["Basis-adjusted TX"]
+    centered = band_results["TX-centered same-width"]
+    adjust_only = int((adjusted & ~centered).sum())
+    center_only = int((centered & ~adjusted).sum())
+    if adjust_only + center_only:
+        p = stats.binomtest(min(adjust_only, center_only), adjust_only + center_only,
+                            0.5).pvalue
+        print(f"Paired containment: adjusted-only {adjust_only}, "
+              f"centered-only {center_only}; McNemar exact p={p:.3f}")
+
+    print("Signed Micro Flip: crossing below at next close, then following close return")
+    for name, offset in (("Raw option strikes", np.zeros(len(d))),
+                         ("Basis-adjusted TX", d.basis.to_numpy())):
+        flip = d.micro_flip.to_numpy() + offset
+        above = d.txf_settle.to_numpy() > flip
+        below_next = d.next_close.to_numpy() <= flip
+        follow = (d.following_close.to_numpy() / d.next_close.to_numpy() - 1) * 100
+        valid = np.isfinite(follow) & (d.contract == d.following_contract).to_numpy()
+        crossed, stayed = above & below_next & valid, above & ~below_next & valid
+        if crossed.sum() and stayed.sum():
+            print(f"{name:23} | crossed n={crossed.sum()}, median |ret|="
+                  f"{np.median(np.abs(follow[crossed])):.2f}%, "
+                  f"continued down={(follow[crossed] < 0).mean():.1%}; "
+                  f"stayed n={stayed.sum()}, median |ret|="
+                  f"{np.median(np.abs(follow[stayed])):.2f}%; "
+                  f"MW p={stats.mannwhitneyu(np.abs(follow[crossed]), np.abs(follow[stayed]), alternative='greater').pvalue:.3f}, "
+                  f"direction p={stats.binomtest(int((follow[crossed] < 0).sum()), int(crossed.sum()), 0.5).pvalue:.3f}")
+        else:
+            print(f"{name:23} | insufficient crossing or stay sample")
+
+
 def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--basis-compare", action="store_true",
+                    help="Compare original levels with same-day-basis TX levels; skip IV download")
+    ap.add_argument("--ohlc-cache", type=Path,
+                    help="Read or write a local TX OHLC CSV to make comparison reproducible")
+    args = ap.parse_args()
     h = pd.read_csv(ROOT / "data" / "gex_history.csv")
     h = h.sort_values("date").reset_index(drop=True)
     start = dt.date.fromisoformat(h.date.min())
     end = dt.date.fromisoformat(h.date.max())
 
-    print("抓取台指期 OHLC…", file=sys.stderr)
-    d = h.merge(fetch_ohlc(start, end), on="date", how="inner")
+    if args.ohlc_cache and args.ohlc_cache.exists():
+        ohlc = pd.read_csv(args.ohlc_cache, dtype={"contract": str})
+    else:
+        print("抓取台指期 OHLC…", file=sys.stderr)
+        ohlc = fetch_ohlc(start, end)
+        if args.ohlc_cache:
+            args.ohlc_cache.parent.mkdir(parents=True, exist_ok=True)
+            ohlc.to_csv(args.ohlc_cache, index=False)
+    if args.basis_compare:
+        compare_basis(h, ohlc)
+        return
+    d = h.merge(ohlc, on="date", how="inner")
     for c in ("high", "low", "close"):
         d["n_" + c] = d[c].shift(-1)
     d["ret"] = (d.txf_settle.shift(-1) / d.txf_settle - 1) * 100

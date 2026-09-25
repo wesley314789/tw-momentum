@@ -763,7 +763,7 @@ def backfill(start: dt.date, end: dt.date):
 
 
 def preopen_snapshot(df: pd.DataFrame, txf: pd.DataFrame,
-                     levels_date: str) -> dict:
+                     levels_date: str, basis: float | None = None) -> dict:
     """
     盤前快照:當日夜盤已收(05:00)但日盤還沒開(08:45)時, 用夜盤收盤價重算
     「現在落在曲線的哪一側」。
@@ -772,7 +772,7 @@ def preopen_snapshot(df: pd.DataFrame, txf: pd.DataFrame,
     只有 gex_now / net_ratio / regime, 也就是唯一真正隨價格改變的東西
     (實測 ±2% 的價格變動下 micro_flip 完全不動, 牆最多跳一個檔位)。
     """
-    if txf.empty:
+    if txf.empty or basis is None or not np.isfinite(basis):
         return {}
     # 夜盤有價、日盤還沒結算 = 盤前狀態, 且要比位階那天更新
     cand = txf[(txf["date"] > levels_date) & txf["txf_night"].notna()]
@@ -780,14 +780,15 @@ def preopen_snapshot(df: pd.DataFrame, txf: pd.DataFrame,
         return {}
     row = cand.sort_values("date").iloc[-1]
     price = float(row["txf_night"])
+    option_price = price - basis  # freeze the last known TX - option F basis
 
     day = dt.date.fromisoformat(levels_date)
     chain, _ = build_chain(df[df["_trade_date"] == day], day)
     if not chain:
         return {}
 
-    gex = float(gex_curve([price], chain_arrays(chain))[0])
-    gross = float(gex_by_strike(price, chain)["gross"].sum())
+    gex = float(gex_curve([option_price], chain_arrays(chain))[0])
+    gross = float(gex_by_strike(option_price, chain)["gross"].sum())
     ratio = abs(gex) / gross if gross else np.nan
     return {
         "preopen_date": row["date"],
@@ -839,7 +840,9 @@ def daily_update():
         write_gamma_debug(latest_day, latest_F, latest_chain)
     # 盤前快照不進歷史檔:它是「還沒收盤的那天」的暫時狀態, 等當日 OI 出來
     # 之後就會被真正的位階取代。
-    pre = preopen_snapshot(df, txf, latest["date"])
+    settle, implied = latest.get("txf_settle"), latest.get("F")
+    basis = float(settle - implied) if pd.notna(settle) and pd.notna(implied) else None
+    pre = preopen_snapshot(df, txf, latest["date"], basis)
     latest.update(pre)
     latest["updated"] = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
     # 位階可能是 NaN(當天找不到夠深的谷、或沒有零軸穿越)。json.dumps 預設會寫出
