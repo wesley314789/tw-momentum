@@ -40,6 +40,8 @@ import requests
 
 ROOT = Path(__file__).resolve().parent.parent
 BREADTH_PATH = ROOT / "data" / "us_breadth.csv"
+SNAPSHOT_DIR = ROOT / "data" / "us_universe"
+SNAPSHOT_COLS = ["date", "symbol", "yahoo", "name", "mcap", "captured_utc"]
 # 每個交易日通過篩選的名單 —— 上榜天數與族群日增減都靠它
 
 OUTPUT_PATH = ROOT / "docs" / "data" / "us_latest.json"
@@ -202,6 +204,8 @@ def screen(arrs: dict, uni: pd.DataFrame, as_of: int | None = None,
     nm = dict(zip(uni.yahoo, uni.name))
     rows = []
     for sym, (dates, c, v) in arrs.items():
+        if sym not in mc:          # historical backfill may fetch extra snapshot symbols
+            continue
         end = len(dates) if as_of is None else int(np.searchsorted(dates, as_of, "right"))
         if end < SMA_LONG + 1:
             continue
@@ -233,10 +237,11 @@ def screen(arrs: dict, uni: pd.DataFrame, as_of: int | None = None,
     return df.sort_values("perf_1m", ascending=False) if len(df) else df
 
 
-def count_universe(arrs: dict, as_of: int) -> int:
+def count_universe(arrs: dict, as_of: int, symbols=None) -> int:
     """該日有足夠歷史可供評估的檔數(廣度的分母)。"""
     n = 0
-    for dates, _, _ in arrs.values():
+    selected = arrs.values() if symbols is None else (arrs[s] for s in symbols if s in arrs)
+    for dates, _, _ in selected:
         end = int(np.searchsorted(dates, as_of, "right"))
         if end >= SMA_LONG + 1 and dates[end - 1] == as_of:
             n += 1
@@ -245,8 +250,50 @@ def count_universe(arrs: dict, as_of: int) -> int:
 
 def load_breadth() -> pd.DataFrame:
     if BREADTH_PATH.exists():
-        return pd.read_csv(BREADTH_PATH, dtype={"date": str})
-    return pd.DataFrame(columns=["date", "count", "universe", "pct"])
+        df = pd.read_csv(BREADTH_PATH, dtype={"date": str})
+        if "universe_basis" not in df:
+            df["universe_basis"] = "unknown_legacy"
+        if "coverage_pct" not in df:
+            df["coverage_pct"] = None
+        else:
+            df["coverage_pct"] = df["coverage_pct"].astype(object).where(
+                df["coverage_pct"].notna(), None)
+        return df
+    return pd.DataFrame(columns=["date", "count", "universe", "pct",
+                                 "universe_basis", "coverage_pct"])
+
+
+def load_snapshots() -> pd.DataFrame:
+    """One file per observed trading day keeps routine Git commits small."""
+    files = sorted(SNAPSHOT_DIR.glob("*.csv.gz")) if SNAPSHOT_DIR.exists() else []
+    if files:
+        return pd.concat([pd.read_csv(p, dtype={"date": str, "symbol": str,
+                                                "yahoo": str}) for p in files],
+                         ignore_index=True)
+    return pd.DataFrame(columns=SNAPSHOT_COLS)
+
+
+def save_snapshot(date: str, universe: pd.DataFrame,
+                  observed_at: pd.Timestamp | None = None) -> pd.DataFrame:
+    """Keep a near-close universe; later snapshots are not historical evidence."""
+    path = SNAPSHOT_DIR / f"{date}.csv.gz"
+    if path.exists():
+        return pd.read_csv(path, dtype={"date": str, "symbol": str, "yahoo": str})
+    if len(universe) < 500:
+        raise ValueError("Nasdaq universe is too small to archive as a valid snapshot")
+    close = pd.Timestamp(f"{date} 16:00", tz="America/New_York")
+    now = observed_at if observed_at is not None else pd.Timestamp.now(tz="UTC")
+    lag_hours = (now - close).total_seconds() / 3600
+    if not 0 <= lag_hours <= 18:
+        print(f"  不存 {date} 的歷史宇宙: 距收盤 {lag_hours:.1f} 小時，非當時快照")
+        return pd.DataFrame(columns=SNAPSHOT_COLS)
+    rows = universe[["symbol", "yahoo", "name", "mcap"]].copy()
+    rows.insert(0, "date", date)
+    rows["captured_utc"] = now.isoformat()
+    rows = rows.drop_duplicates(["date", "symbol"], keep="first")
+    SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+    rows.to_csv(path, index=False, compression="gzip")
+    return rows
 
 
 def save_breadth(df: pd.DataFrame) -> pd.DataFrame:
@@ -255,6 +302,12 @@ def save_breadth(df: pd.DataFrame) -> pd.DataFrame:
     df = df[df.date.isin(sorted(df.date.unique())[-KEEP_DAYS:])]
     df.to_csv(BREADTH_PATH, index=False)
     return df
+
+
+def pack_breadth(df: pd.DataFrame) -> list[dict]:
+    """JSON-safe rows; pandas float columns keep NaN even after where(None)."""
+    return [{k: (None if pd.isna(v) else v) for k, v in row.items()}
+            for row in df.to_dict("records")]
 
 
 MEMBER_PATH = ROOT / "data" / "us_momentum_members.csv.gz"
@@ -337,15 +390,30 @@ def main():
 
     uni = fetch_universe()
     print(f"宇宙: {len(uni)} 檔 (市值 > ${MIN_MCAP/1e6:.0f}M)")
+    snapshots = load_snapshots() if args.backfill else pd.DataFrame(columns=SNAPSHOT_COLS)
+    if args.backfill and not snapshots.empty:
+        # Some symbols may since have delisted or fallen below the cap. Yahoo
+        # may still lack their bars; the report labels the remaining coverage.
+        historical = snapshots[~snapshots.yahoo.isin(uni.yahoo)].drop_duplicates("yahoo")
+        fetch_symbols = pd.concat([uni.yahoo, historical.yahoo]).dropna().unique().tolist()
+    else:
+        fetch_symbols = uni.yahoo.tolist()
     bench = fetch_bench(rng)
-    bars = fetch_bars(uni.yahoo.tolist(), rng=rng)
+    bars = fetch_bars(fetch_symbols, rng=rng)
     if not bars:
         print("沒有取得任何日 K,中止。", file=sys.stderr)
         return 1
 
     arrs = to_arrays(bars)
     cal = trading_days(arrs)
-    picks = screen(arrs, uni, cal[-1], bench)
+    latest_date = dt.date.fromordinal(cal[-1]).isoformat()
+    latest_snapshot = save_snapshot(latest_date, uni)
+    snapshots = (pd.concat([snapshots, latest_snapshot], ignore_index=True)
+                 .drop_duplicates(["date", "symbol"], keep="first")
+                 if not latest_snapshot.empty else snapshots)
+    by_date = {d: g.drop(columns="date") for d, g in snapshots.groupby("date")}
+    latest_uni = by_date.get(latest_date, uni)
+    picks = screen(arrs, latest_uni, cal[-1], bench)
     rows = load_breadth().to_dict("records")
     mem = load_members()
     mem_rows = mem.to_dict("records")
@@ -362,12 +430,18 @@ def main():
         d = dt.date.fromordinal(o).isoformat()
         if d in have and not args.backfill:
             continue
-        n_uni = count_universe(arrs, o)
+        uni_day = by_date.get(d, uni) if args.backfill else latest_uni
+        basis = ("observed_snapshot" if d in by_date else
+                 "reconstructed_current" if args.backfill else "current_observation")
+        coverage = sum(sym in arrs for sym in uni_day.yahoo) / len(uni_day) if len(uni_day) else 0
+        n_uni = count_universe(arrs, o, set(uni_day.yahoo))
         if n_uni < 500:            # 該日可評估的檔數太少, 不具代表性
             continue
-        p = screen(arrs, uni, o, bench)
+        p = screen(arrs, uni_day, o, bench)
         rows.append({"date": d, "count": len(p), "universe": n_uni,
-                     "pct": round(len(p) / n_uni * 100, 2)})
+                     "pct": round(len(p) / n_uni * 100, 2),
+                     "universe_basis": basis,
+                     "coverage_pct": round(coverage * 100, 1)})
         if args.backfill:
             rebuilt.add(d)
             new_mem.extend({"date": d, "symbol": sym, "theme": old_theme.get((d, sym))}
@@ -438,14 +512,15 @@ def main():
     OUTPUT_PATH.write_text(json.dumps({
         "updated": dt.datetime.now().strftime("%Y-%m-%d %H:%M"),
         "trade_date": picks.date.mode()[0] if len(picks) else None,
-        "universe": len(bars),
+        "universe": count_universe(arrs, cal[-1], set(latest_uni.yahoo)),
         "picks": recs,
         "themes": groups,
         "member_days": len(mem_dates),
-        "breadth": breadth.tail(120).to_dict("records"),
+        "breadth": pack_breadth(breadth.tail(120)),
     }, ensure_ascii=False, allow_nan=False), encoding="utf-8")
 
-    print(f"完成: 通過 {len(picks)} 檔 / 宇宙 {len(bars)} 檔 | "
+    print(f"完成: 通過 {len(picks)} 檔 / 可評估宇宙 "
+          f"{count_universe(arrs, cal[-1], set(latest_uni.yahoo))} 檔 | "
           f"廣度序列 {len(breadth)} 天")
     return 0
 

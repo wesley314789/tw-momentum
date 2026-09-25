@@ -379,10 +379,18 @@ def momentum_screen(hist: pd.DataFrame, shares: pd.DataFrame,
     for code, g in hist.sort_values("date").groupby("code"):
         if g["date"].iloc[-1] != today:      # 當天沒交易(停牌等)就跳過
             continue
-        c = g["close"].to_numpy()
+        # Backtests can supply a total-return approximation for technical
+        # signals while keeping raw close for actual price and market cap.
+        c = g["signal_close"].to_numpy() if "signal_close" in g else g["close"].to_numpy()
         if len(c) < 200:
             continue
+        # The historical backtest marks unexplained corporate-action jumps.
+        # A contaminated 200-day window makes both SMA and return signals
+        # unreliable; the live pipeline has no _corp field and is unchanged.
+        if "_corp" in g and g["_corp"].tail(200).any():
+            continue
         close = c[-1]
+        raw_close = g["close"].iloc[-1]
         n = sh.get(code)
         if not n:
             continue
@@ -397,17 +405,17 @@ def momentum_screen(hist: pd.DataFrame, shares: pd.DataFrame,
         excess = perf - ix_perf
         if not (close > c[-200:].mean()
                 and c[-10:].mean() > c[-20:].mean()
-                and close * n > BR_MCAP
+                and raw_close * n > BR_MCAP
                 and turnover > BR_TURNOVER
                 and excess > BR_EXCESS):
             continue
         rows.append({"code": code, "name": g["name"].iloc[-1],
-                     "market": g["market"].iloc[-1], "close": round(close, 2),
+                     "market": g["market"].iloc[-1], "close": round(raw_close, 2),
                      "perf_1m": round(perf, 1),
                      "idx_1m": round(ix_perf, 1),      # 同一段期間的大盤漲幅
                      "excess_1m": round(excess, 1),    # 超額 = 個股 - 大盤
                      "value": round(turnover / 1e8, 2),
-                     "mcap": round(close * n / 1e8, 0)})
+                     "mcap": round(raw_close * n / 1e8, 0)})
     df = pd.DataFrame(rows)
     return df.sort_values("perf_1m", ascending=False) if len(df) else df
 

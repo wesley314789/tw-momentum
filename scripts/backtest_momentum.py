@@ -26,6 +26,7 @@ backtest_momentum.py — 「新上榜就買、R 倍數移動停利」的回測
     python scripts/backtest_momentum.py --start 2026-01-01
 """
 import argparse
+import hashlib
 import io
 import math
 import sys
@@ -36,12 +37,15 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import update_data as u
+import corporate_actions as ca
 
 ROOT = Path(__file__).resolve().parent.parent
 LONG_HIST = ROOT / "data" / "history_long.csv.gz"
 IDX_LONG = ROOT / "data" / "index_long.csv.gz"
 # 篩選條件是相對大盤的, 回測區間比流水線的 280 天長, 要用涵蓋得到的指數序列
-IDX = pd.read_csv(IDX_LONG) if IDX_LONG.exists() else u.load_index_history()
+IDX = (pd.concat([pd.read_csv(IDX_LONG), u.load_index_history()], ignore_index=True)
+       .drop_duplicates("date", keep="last").sort_values("date")
+       if IDX_LONG.exists() else u.load_index_history())
 
 POSITION = 10_000.0     # 每檔買進金額(元)
 R = 0.07                # 1R = 7%
@@ -54,12 +58,8 @@ TAX_RATE = 0.003        # 證交稅, 賣出時收
 
 SMOOTH = False
 
-# 台股漲跌幅限制 ±10%。超過這個幅度的單日變動不可能是真的行情, 只會是除權息、
-# 減資或面額變更 —— 而這兩個交易所的每日行情 API 給的是**未還原權值**的原始
-# 價格。2026 年內就有 66 次。不處理的話, 沛爾生醫調降面額那天會被算成單日
-# -90%(回測記成 -13.41R), 那是資料假象不是虧損。
-# 我們拿不到還原因子(要另外去對除權息參考價), 所以不猜: 偵測到就在前一天的
-# 收盤價把部位中性出場, 並且不計入績效統計, 只報告被排除幾筆。
+# 官方除權息參考價可校正一般現金與股票股利；減資、面額變更等未涵蓋事件
+# 仍以殘差跳價守門，並列出排除數量。
 LIMIT = 0.105
 
 
@@ -77,18 +77,22 @@ def stop_level(max_r: float) -> float:
     return 0.0 if max_r < 2 - EPS else math.floor(max_r + EPS) * R
 
 
-def load_prices() -> pd.DataFrame:
+def load_prices(refresh_actions: bool = False) -> pd.DataFrame:
     if LONG_HIST.exists():
-        df = pd.read_csv(LONG_HIST, dtype={"code": str})
+        df = pd.concat([pd.read_csv(LONG_HIST, dtype={"code": str}),
+                        u.load_history()], ignore_index=True)
     else:
         df = u.load_history()
-    df = df.sort_values(["code", "date"])
-    chg = df.groupby("code")["close"].pct_change()
-    df["_corp"] = chg.abs() > LIMIT      # 疑似除權息/減資/面額變更
-    return df
+    df = df.drop_duplicates(["date", "code"], keep="last").sort_values(["code", "date"])
+    actions = ca.ensure_actions(str(df.date.min()), str(df.date.max()), refresh_actions)
+    adjusted, audit = ca.adjust_history(df, actions)
+    print(f"官方除權息: 匹配 {audit['events_applied']}/{audit['events_seen']} 筆, "
+          f"不符 {audit['events_mismatched']} 筆, 校正後仍異常跳價 "
+          f"{audit['residual_jumps']} 筆", flush=True)
+    return adjusted
 
 
-MEM_CACHE = ROOT / "data" / f"_bt_members_{u.SCREEN_SIG}.csv.gz"
+MEM_CACHE = ROOT / "data" / f"_bt_members_{u.SCREEN_SIG}_ca1.csv.gz"
 
 
 def membership(hist: pd.DataFrame, shares: pd.DataFrame, dates: list) -> dict:
@@ -98,20 +102,24 @@ def membership(hist: pd.DataFrame, shares: pd.DataFrame, dates: list) -> dict:
     算一次要十分鐘(逐日重跑 momentum_screen), 但 R、停利規則、手續費都不影響
     名單, 所以存起來重複用。快取涵蓋不到要求的區間時才重算。
     """
+    out = {}
     if MEM_CACHE.exists():
         c = pd.read_csv(MEM_CACHE, dtype={"date": str, "code": str})
-        have = set(c["date"].unique())
-        if set(dates) <= have:
-            print(f"  用名單快取 ({len(have)} 天)", flush=True)
-            g = c[c["date"].isin(dates)].groupby("date")["code"].apply(set)
-            return {d: g.get(d, set()) for d in dates}
-    out = {}
-    for i, d in enumerate(dates, 1):
+        g = c[c["date"].isin(dates)].groupby("date")["code"].apply(
+            lambda s: {x for x in s.dropna() if x})
+        out = {d: g[d] for d in g.index}
+        if out:
+            print(f"  用名單快取 ({len(out)}/{len(dates)} 天)", flush=True)
+    missing = [d for d in dates if d not in out]
+    for i, d in enumerate(missing, 1):
         picks = u.momentum_screen(hist[hist["date"] <= d], shares, idx=IDX)
         out[d] = set(picks["code"]) if len(picks) else set()
         if i % 20 == 0:
-            print(f"  篩選 {i}/{len(dates)} ({d}: {len(out[d])} 檔)", flush=True)
-    rows = [{"date": d, "code": c} for d, cs in out.items() for c in cs]
+            print(f"  篩選 {i}/{len(missing)} ({d}: {len(out[d])} 檔)", flush=True)
+    # Keep an empty marker for zero-pick days; otherwise every rerun
+    # needlessly recalculates those dates.
+    rows = [{"date": d, "code": c} for d, cs in out.items()
+            for c in (cs if cs else {""})]
     pd.DataFrame(rows).to_csv(MEM_CACHE, index=False, compression="gzip")
     return out
 
@@ -136,10 +144,10 @@ def build_px(hist: pd.DataFrame) -> dict:
         g = g.sort_values("date")
         px[code] = {
             "i": {d: k for k, d in enumerate(g["date"].to_numpy())},
-            "o": g["open"].to_numpy(dtype=float),
-            "h": g["high"].to_numpy(dtype=float),
-            "l": g["low"].to_numpy(dtype=float),
-            "c": g["close"].to_numpy(dtype=float),
+            "o": g["adj_open"].to_numpy(dtype=float),
+            "h": g["adj_high"].to_numpy(dtype=float),
+            "l": g["adj_low"].to_numpy(dtype=float),
+            "c": g["adj_close"].to_numpy(dtype=float),
             "x": g["_corp"].to_numpy(dtype=bool),
             "name": g["name"].iloc[-1],
         }
@@ -147,7 +155,8 @@ def build_px(hist: pd.DataFrame) -> dict:
 
 
 def run(px: dict, members: dict, dates: list,
-        rate=None, minimum=None, with_fees: bool = True) -> pd.DataFrame:
+        rate=None, minimum=None, with_fees: bool = True,
+        initial_prev: set | None = None) -> pd.DataFrame:
     trades, open_pos = [], {}
 
     for i, d in enumerate(dates):
@@ -158,8 +167,8 @@ def run(px: dict, members: dict, dates: list,
             k = p["i"].get(d)
             if k is None:
                 continue                      # 停牌, 續抱
-            if p["x"][k]:                 # 除權息/減資當天:中性出場, 不計績效
-                pos.update(exit_date=d, exit_px=pos["last_px"], reason="除權息排除")
+            if p["x"][k]:  # 官方資料無法校正的跳價；績效無法可信估算
+                pos.update(exit_date=d, exit_px=pos["last_px"], reason="未明公司行為排除")
                 trades.append(pos)
                 del open_pos[code]
                 continue
@@ -185,7 +194,7 @@ def run(px: dict, members: dict, dates: list,
         # --- 今天新進榜的, 明天開盤買 ---
         if i + 1 >= len(dates):
             continue
-        prev = members.get(dates[i - 1], set()) if i else set()
+        prev = members.get(dates[i - 1], set()) if i else (initial_prev or set())
         new = members.get(d, set()) - prev
         nxt = dates[i + 1]
         for code in sorted(new):
@@ -194,6 +203,8 @@ def run(px: dict, members: dict, dates: list,
             p = px[code]
             k = p["i"].get(nxt)
             if k is None:
+                continue
+            if p["x"][k]:
                 continue
             entry = p["o"][k]
             if not np.isfinite(entry) or entry <= 0:   # 缺開盤價就買不進去
@@ -230,11 +241,11 @@ def report(o, t: pd.DataFrame, label: str, dates: list):
     if t.empty:
         o.write("沒有任何交易\n")
         return
-    dropped = t[t["reason"] == "除權息排除"]
-    t = t[t["reason"] != "除權息排除"]
+    dropped = t[t["reason"] == "未明公司行為排除"]
+    t = t[t["reason"] != "未明公司行為排除"]
     if len(dropped):
-        o.write(f"(另有 {len(dropped)} 筆在持有期間遇到除權息/減資/面額變更, "
-                f"價格未還原權值無法評價, 已排除)\n")
+        o.write(f"(另有 {len(dropped)} 筆遇到官方資料無法校正的跳價，"
+                f"已排除；此績效只代表其餘交易)\n")
     n = len(t)
     win = int((t["pnl"] > 0).sum())
     invested = n * POSITION
@@ -292,13 +303,20 @@ def main():
                     help="停損幅度, 可給多個做比較, 例如 --r 0.05,0.07,0.10,0.15")
     ap.add_argument("--smooth", action="store_true",
                     help="移動停利改用 (floor(maxR)-1)*R, 確認結論對規則邊界不敏感")
+    ap.add_argument("--refresh-actions", action="store_true",
+                    help="重新抓證交所與櫃買中心官方除權息參考價")
     args = ap.parse_args()
 
     global SMOOTH, R
     SMOOTH = args.smooth
     r_list = [float(x) for x in str(args.r).split(",")]
 
-    hist = load_prices()
+    hist = load_prices(args.refresh_actions)
+    # A refreshed action series can change historical membership; never reuse
+    # a cache built with earlier adjustment factors.
+    global MEM_CACHE
+    digest = hashlib.sha256(ca.PATH.read_bytes()).hexdigest()[:10]
+    MEM_CACHE = ROOT / "data" / f"_bt_members_{u.SCREEN_SIG}_ca1_{digest}.csv.gz"
     shares = u.load_shares()
     all_dates = sorted(hist["date"].unique())
     usable = all_dates[199:]          # 前 200 個交易日拿來算 SMA200
@@ -311,6 +329,12 @@ def main():
           f"{' [平滑版移動停利]' if SMOOTH else ''}", flush=True)
 
     mem = membership(hist, shares, dates)
+    # The first requested date is not an automatic "new listing": compare
+    # it with the last trading day before the requested research window.
+    previous = max((d for d in all_dates if d < dates[0]), default=None)
+    prior = (u.momentum_screen(hist[hist["date"] <= previous], shares, idx=IDX)
+             if previous else pd.DataFrame())
+    initial_prev = set(prior["code"]) if len(prior) else set()
     px = build_px(hist)          # 建一次, 所有情境共用
     fee_scen = [
         ("原價手續費 + 每筆最低 20 元", dict(rate=0.001425, minimum=20.0)),
@@ -318,14 +342,18 @@ def main():
         ("完全不計交易成本", dict(with_fees=False)),
     ]
     with io.open(args.out, "w", encoding="utf-8") as o:
+        o.write("資料品質: 用證交所/櫃買中心官方除權息參考價近似校正歷史 OHLC；"
+                "技術訊號用校正價，市值仍用原始價 × 目前股數。\n")
+        o.write(f"未能校正的異常跳價 {int(hist['_corp'].sum())} 筆；含事件的交易"
+                "另行排除並計數，績效不含其未知結果。\n")
         summary, yearly = [], []
         for r in r_list:
             R = r
             for j, (label, kw) in enumerate(fee_scen):
-                t = run(px, mem, dates, **kw)
+                t = run(px, mem, dates, initial_prev=initial_prev, **kw)
                 report(o, t, f"1R = {r*100:.0f}%  |  {label}", dates)
                 if j == 0:                       # 逐年只看原價手續費那組
-                    y = t[t["reason"] != "除權息排除"].copy()
+                    y = t[t["reason"] != "未明公司行為排除"].copy()
                     y["年"] = y["exit_date"].str[:4]
                     for yr, gg in y.groupby("年"):
                         gp = gg.loc[gg.pnl > 0, "pnl"].sum()
@@ -335,7 +363,7 @@ def main():
                                        gp / gl if gl else float("nan")))
                     if r == r_list[0]:
                         t.to_csv("_bt_trades.csv", index=False, encoding="utf-8-sig")
-                keep = t[t["reason"] != "除權息排除"]
+                keep = t[t["reason"] != "未明公司行為排除"]
                 gp = keep.loc[keep.pnl > 0, "pnl"].sum()
                 gl = -keep.loc[keep.pnl <= 0, "pnl"].sum()
                 ev = pd.concat([pd.Series(1, index=pd.to_datetime(keep["entry_date"])),
