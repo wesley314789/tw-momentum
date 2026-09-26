@@ -136,7 +136,7 @@ tbody tr:hover{background:var(--surface)}
    會跟著 x/y 不等比縮放而變形 */
 .br-ma polyline{fill:none;stroke:var(--blue,#4c8dff);stroke-width:1.6;
   stroke-linejoin:round;vector-effect:non-scaling-stroke}
-.br-legend{display:flex;gap:14px;align-items:center;margin-top:6px;
+.br-legend{display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-top:6px;
   font-size:11px;color:var(--muted)}
 .br-legend s{display:inline-block;width:14px;height:2px;text-decoration:none;
   vertical-align:middle;margin-right:5px}
@@ -252,7 +252,7 @@ tbody tr:hover{background:var(--surface)}
     <div class="br-chart" id="br-chart"></div>
     <div class="br-legend" id="br-legend"></div>
     <table class="br-table">
-      <thead><tr><th>日期</th><th>通過檔數</th><th>佔全市場</th><th>對前日</th><th>20MA</th><th></th></tr></thead>
+      <thead><tr><th>日期</th><th>通過檔數</th><th>佔全市場</th><th>對前日</th><th>5MA</th><th>10MA</th><th>20MA</th><th></th></tr></thead>
       <tbody id="br-tbody"></tbody>
     </table>
   </section>
@@ -481,8 +481,7 @@ function renderThemes(){
 
 const MA_N = 20;
 
-// 20 日移動平均。前 19 天窗口不完整, 回 null 讓線從第 20 天才開始 —— 用
-// 不足 20 天的平均去補會在起點畫出一段假的平滑曲線。
+// 以交易日資料計算均線；窗口不足 n 天時回 null，不用部分窗口補線。
 function movingAvg(v, n = MA_N){
   const out = [];
   let sum = 0;
@@ -504,21 +503,25 @@ function renderBreadth(){
       ? "尚無美股廣度資料"
       : "尚無廣度資料";
     $("br-chart").innerHTML = ""; $("br-tbody").innerHTML = ""; $("br-stats").innerHTML = "";
+    $("br-legend").innerHTML = "";
     return;
   }
   const last = b[b.length-1];
   const counts = b.map(x=>x.count);
   const max = Math.max(...counts, 1);
-  const ma = movingAvg(counts);
-  const maNow = ma[ma.length-1];
+  const averages = [
+    {n:5, color:"#38c9ad"},
+    {n:10, color:"#b78aff"},
+    {n:20, color:"var(--blue,#4c8dff)"},
+  ].map(s=>({...s, values:movingAvg(counts,s.n)}));
+  const maNow = averages[2].values[counts.length-1];
 
   $("br-now").innerHTML = `${last.count}<small>${unit}${last.universe} 檔${us?"":"全市場"}</small>`;
   $("br-sub").textContent =
     `${last.date} · 佔 ${last.pct.toFixed(1)}%`
     + (us ? " · 市值 > $5 億的美股" : "");
   $("br-stats").innerHTML = [
-    // 當日對 20MA 的位置比單看當日更有意義:站上代表擴張還在延續
-    ["20 日均", maNow==null ? "—" : maNow.toFixed(0)],
+    ...averages.map(s=>[`${s.n} 日均`, s.values[counts.length-1]==null ? "—" : s.values[counts.length-1].toFixed(0)]),
     ["對 20 日均", maNow==null ? "—" : (last.count>=maNow?"+":"") + (last.count-maNow).toFixed(0)],
     ["區間最高", Math.max(...counts)],
     ["區間最低", Math.min(...counts)],
@@ -526,7 +529,7 @@ function renderBreadth(){
   ].map(([k,v])=>`<div class="br-stat"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
 
   const bars = b.map((x,i)=>{
-    const m = ma[i]==null ? "" : ` · 20MA ${ma[i].toFixed(0)}`;
+    const m = averages.map(s=>s.values[i]==null ? "" : ` · ${s.n}MA ${s.values[i].toFixed(0)}`).join("");
     return `<i style="height:${Math.max(2, x.count/max*100)}%" `
          + `title="${x.date}: ${x.count} 檔 (${x.pct.toFixed(1)}%)${m}"></i>`;
   }).join("");
@@ -534,30 +537,33 @@ function renderBreadth(){
   // viewBox 的 x 用「第幾根長條」, y 用 0~100 的百分比, 再靠
   // preserveAspectRatio="none" 拉伸到實際尺寸, 這樣不必知道容器的像素寬高。
   // x 取 i+0.5 對準長條中心。
-  const pts = ma.map((v,i)=> v==null ? null : `${i+0.5},${(100 - v/max*100).toFixed(2)}`)
-                .filter(Boolean).join(" ");
-  const line = pts
-    ? `<svg class="br-ma" viewBox="0 0 ${b.length} 100" preserveAspectRatio="none">
-         <polyline points="${pts}"></polyline></svg>`
-    : "";
+  const lines = averages.map(s=>{
+    const pts = s.values.map((v,i)=>v==null ? null : `${i+0.5},${(100-v/max*100).toFixed(2)}`)
+      .filter(Boolean).join(" ");
+    return pts ? `<polyline style="stroke:${s.color}" points="${pts}"><title>${s.n} 日移動平均</title></polyline>` : "";
+  }).join("");
+  const line = lines ? `<svg class="br-ma" viewBox="0 0 ${b.length} 100" preserveAspectRatio="none">${lines}</svg>` : "";
 
   $("br-chart").innerHTML = `<div class="br-plot">${bars}${line}</div>`;
   $("br-legend").innerHTML =
     `<span><s style="background:var(--amber);opacity:.55"></s>每日通過檔數</span>`
-    + `<span><s style="background:var(--blue,#4c8dff)"></s>20 日移動平均</span>`;
+    + averages.map(s=>`<span><s style="background:${s.color}"></s>${s.n} 日移動平均</span>`).join("");
 
   $("br-tbody").innerHTML = b.slice().reverse().map((x,i,arr)=>{
     const nx = arr[i+1];                      // 反轉後,下一筆才是前一天
     const d = nx ? x.count - nx.count : null;
     const cls = d==null ? "flat" : d>0 ? "up" : d<0 ? "down" : "flat";
     const dz = d==null ? "—" : (d>0?"+":"")+d;
-    const m = ma[b.length-1-i];
+    const cells = averages.map(s=>{
+      const m = s.values[b.length-1-i];
+      return `<td class="ma">${m==null ? "—" : m.toFixed(0)}</td>`;
+    }).join("");
     return `<tr>
       <td>${x.date}</td>
       <td>${x.count}</td>
       <td>${x.pct.toFixed(2)}%</td>
       <td class="${cls}">${dz}</td>
-      <td class="ma">${m==null ? "—" : m.toFixed(0)}</td>
+      ${cells}
       <td><span class="br-bar" style="width:${x.count/max*140}px"></span></td>
     </tr>`;
   }).join("");
