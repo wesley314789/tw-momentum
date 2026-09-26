@@ -252,7 +252,7 @@ tbody tr:hover{background:var(--surface)}
     <div class="br-chart" id="br-chart"></div>
     <div class="br-legend" id="br-legend"></div>
     <table class="br-table">
-      <thead><tr><th>日期</th><th>通過檔數</th><th>佔全市場</th><th>對前日</th><th>5MA</th><th>10MA</th><th>20MA</th><th></th></tr></thead>
+      <thead><tr><th>日期</th><th>通過檔數</th><th>佔全市場</th><th>對前日</th><th>10MA</th><th>20MA</th><th></th></tr></thead>
       <tbody id="br-tbody"></tbody>
     </table>
   </section>
@@ -510,11 +510,10 @@ function renderBreadth(){
   const counts = b.map(x=>x.count);
   const max = Math.max(...counts, 1);
   const averages = [
-    {n:5, color:"#38c9ad"},
     {n:10, color:"#b78aff"},
     {n:20, color:"var(--blue,#4c8dff)"},
   ].map(s=>({...s, values:movingAvg(counts,s.n)}));
-  const maNow = averages[2].values[counts.length-1];
+  const maNow = averages.find(s=>s.n===20).values[counts.length-1];
 
   $("br-now").innerHTML = `${last.count}<small>${unit}${last.universe} 檔${us?"":"全市場"}</small>`;
   $("br-sub").textContent =
