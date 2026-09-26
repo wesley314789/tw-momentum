@@ -68,13 +68,14 @@ LIMIT = 0.105
 EPS = 1e-9
 
 
-def stop_level(max_r: float) -> float:
+def stop_level(max_r: float, risk_r: float | None = None) -> float:
     """回傳當下的停損/停利價位, 以報酬率表示(-0.07 = -7%)。"""
+    risk_r = R if risk_r is None else risk_r
     if max_r < 1 - EPS:
-        return -R
+        return -risk_r
     if SMOOTH:
-        return (math.floor(max_r + EPS) - 1) * R
-    return 0.0 if max_r < 2 - EPS else math.floor(max_r + EPS) * R
+        return (math.floor(max_r + EPS) - 1) * risk_r
+    return 0.0 if max_r < 2 - EPS else math.floor(max_r + EPS) * risk_r
 
 
 def load_prices(refresh_actions: bool = False) -> pd.DataFrame:
@@ -131,7 +132,34 @@ def fees(amount: float, is_sell: bool, rate=None, minimum=None) -> float:
     return f + (amount * TAX_RATE if is_sell else 0.0)
 
 
-def build_px(hist: pd.DataFrame) -> dict:
+def wilder_atr(high, low, close, invalid, period=14):
+    """Causal Wilder ATR, seeded by period valid true ranges.
+
+    Missing/invalid bars and unexplained corporate actions reset the seed.
+    The first valid bar in a segment uses high-low as its true range.
+    """
+    if period < 1:
+        raise ValueError("ATR period must be positive")
+    out = np.full(len(close), np.nan)
+    seed, prior, value = [], None, None
+    for i, (hi, lo, cl, bad) in enumerate(zip(high, low, close, invalid)):
+        if bad or not np.isfinite([hi, lo, cl]).all() or lo <= 0 or hi < lo:
+            seed, prior, value = [], None, None
+            continue
+        tr = hi - lo if prior is None else max(hi - lo, abs(hi - prior), abs(lo - prior))
+        if value is None:
+            seed.append(tr)
+            if len(seed) == period:
+                value = sum(seed) / period
+        else:
+            value = ((period - 1) * value + tr) / period
+        if value is not None:
+            out[i] = value
+        prior = cl
+    return out
+
+
+def build_px(hist: pd.DataFrame, atr_period: int | None = None) -> dict:
     """
     把日線攤成每檔一組 numpy 陣列 + 日期索引。
 
@@ -151,13 +179,19 @@ def build_px(hist: pd.DataFrame) -> dict:
             "x": g["_corp"].to_numpy(dtype=bool),
             "name": g["name"].iloc[-1],
         }
+        if atr_period is not None:
+            p = px[code]
+            p["atr"] = wilder_atr(p["h"], p["l"], p["c"], p["x"], atr_period)
     return px
 
 
 def run(px: dict, members: dict, dates: list,
         rate=None, minimum=None, with_fees: bool = True,
-        initial_prev: set | None = None) -> pd.DataFrame:
+        initial_prev: set | None = None, atr_multiple: float | None = None) -> pd.DataFrame:
+    if atr_multiple is not None and (not np.isfinite(atr_multiple) or atr_multiple <= 0):
+        raise ValueError("ATR multiple must be positive and finite")
     trades, open_pos = [], {}
+    skipped_atr = 0
 
     for i, d in enumerate(dates):
         # --- 先處理已持有的部位 ---
@@ -178,7 +212,7 @@ def run(px: dict, members: dict, dates: list,
             # 停利階梯就全錯。缺值就當這天沒資料, 續抱。
             if not (np.isfinite(lo) and np.isfinite(hi) and np.isfinite(op)):
                 continue
-            stop_px = pos["entry"] * (1 + stop_level(pos["max_r"]))
+            stop_px = pos["entry"] * (1 + stop_level(pos["max_r"], pos["risk_pct"]))
             if lo <= stop_px:                 # 先判停損, 不讓當日新高先把停利拉上去
                 exit_px = min(op, stop_px)    # 跳空就以開盤價出場
                 reason = ("停損" if pos["max_r"] < 1 else
@@ -187,7 +221,7 @@ def run(px: dict, members: dict, dates: list,
                 trades.append(pos)
                 del open_pos[code]
                 continue
-            pos["max_r"] = max(pos["max_r"], (hi / pos["entry"] - 1) / R)
+            pos["max_r"] = max(pos["max_r"], (hi / pos["entry"] - 1) / pos["risk_pct"])
             if np.isfinite(cl):
                 pos["last_px"] = cl
 
@@ -209,8 +243,17 @@ def run(px: dict, members: dict, dates: list,
             entry = p["o"][k]
             if not np.isfinite(entry) or entry <= 0:   # 缺開盤價就買不進去
                 continue
+            risk_pct, atr_signal = R, np.nan
+            if atr_multiple is not None:
+                signal_k = p["i"].get(d)
+                atr_signal = p["atr"][signal_k] if signal_k is not None else np.nan
+                risk_pct = atr_multiple * atr_signal / entry
+                if not np.isfinite(risk_pct) or not 0 < risk_pct < 1:
+                    skipped_atr += 1
+                    continue
             open_pos[code] = dict(code=code, name=p["name"],
                                   listed=d, entry_date=nxt, entry=float(entry),
+                                  risk_pct=float(risk_pct), atr_signal=float(atr_signal),
                                   max_r=0.0, last_px=float(entry),
                                   exit_date=None, exit_px=None, reason=None)
 
@@ -219,6 +262,7 @@ def run(px: dict, members: dict, dates: list,
         trades.append(pos)
 
     t = pd.DataFrame(trades)
+    t.attrs["skipped_atr"] = skipped_atr
     if t.empty:
         return t
     t["shares"] = POSITION / t["entry"]
@@ -232,8 +276,10 @@ def run(px: dict, members: dict, dates: list,
         t["cost"] = 0.0
     t["pnl"] = t["gross"] - t["cost"]
     t["ret"] = t["pnl"] / POSITION
-    t["r_mult"] = t["ret"] / R
-    return t.sort_values("entry_date").reset_index(drop=True)
+    t["r_mult"] = t["ret"] / t["risk_pct"]
+    result = t.sort_values("entry_date").reset_index(drop=True)
+    result.attrs["skipped_atr"] = skipped_atr
+    return result
 
 
 def report(o, t: pd.DataFrame, label: str, dates: list):
@@ -246,6 +292,9 @@ def report(o, t: pd.DataFrame, label: str, dates: list):
     if len(dropped):
         o.write(f"(另有 {len(dropped)} 筆遇到官方資料無法校正的跳價，"
                 f"已排除；此績效只代表其餘交易)\n")
+    if t.empty:
+        o.write("沒有可評價的交易\n")
+        return
     n = len(t)
     win = int((t["pnl"] > 0).sum())
     invested = n * POSITION
