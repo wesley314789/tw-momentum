@@ -185,7 +185,6 @@ theme 填 **`-`** 代表「讀過本文、確定是個股因素或投機,不屬�
 
 ### Gamma Concentration（不推測 Dealer 方向）
 
-- 原本的 `peak`（山頂）與 `valley`（山谷）仍保留在此區，沿用舊 `gross = (CallOI + PutOI) × Gamma` 和共用 IV 的算法；`concentration_peak`、`concentration_valley` 則是新模型結果，兩者可能不同
 - `gamma_concentration_by_strike()` 分開計算 `CallOI × |CallGamma|` 與 `PutOI × |PutGamma|`
 - `total_gamma_concentration = Call concentration - Put concentration`，表示兩邊相對集中程度，不代表 Dealer 正負 Gamma
 - `cluster_concentration = Call concentration + Put concentration`，用來找最強 clustering strike
@@ -197,6 +196,8 @@ theme 填 **`-`** 代表「讀過本文、確定是個股因素或投機,不屬�
 Call/Put gamma、兩邊 concentration、淨 concentration 與舊 signed GEX。
 
 ### Signed GEX（依賴 Dealer positioning assumption）
+
+原版 `peak`（山頂）與 `valley`（山谷）在此區顯示，沿用舊 `gross = (CallOI + PutOI) × Gamma` 和共用 IV 算法；這兩個 gross gamma 位階本身不依賴 Dealer 方向，不是正負翻轉點。Gamma Concentration 區的 `concentration_peak`、`concentration_valley` 是另一套算法，兩者可能不同。
 
 原模型完整保留，仍以 Dealer long Call / short Put 為假設，產生:
 
@@ -216,7 +217,7 @@ Concentration Valley 找**Call+Put concentration 的局部低點**,不是區間�
 
 **盤前快照**:排程跑在台北早上 07:00,此時當日夜盤(前日 15:00~當日 05:00)已收、日盤尚未開,期交所已發布夜盤收盤價但還沒有當日 OI。這時先用前一收盤日已知的 `台指期結算價 - 選擇權 F`，把夜盤台指期價格扣回選擇權座標，再重算 `gex_now` / `net_ratio` / `regime`,輸出成 `preopen_*` 欄位。位階仍沿用上一交易日的 OI 與 IV；盤前欄位不寫進歷史檔，因為它是暫時狀態。夜盤基差可能變動，這只是以上次已知價差估算。
 
-前端以**價格階梯**呈現:原始 GEX 履約價與 Flip 仍保存在 `data/gex_history.csv` / `docs/data/gex_latest.json`，網站顯示時才加上同日已知的 `台指期結算價 - 選擇權 F`，換成台指期**估算**點位，再與台指期實際結算或夜盤價計算距離。每列仍標示原始履約價，頁面下方顯示所用日期與基差。台指期價格取自期交所 `futDataDown`(商品代碼 `TX`),選 **OI 最大**的月份而非最近月。換月、不同到期與夜盤基差變化都會產生估算誤差；這不是逐筆同步報價。
+前端以**價格階梯**呈現:原始 GEX 履約價與 Flip 仍保存在 `data/gex_history.csv` / `docs/data/gex_latest.json`，網站顯示時才加上同日已知的 `台指期結算價 - 選擇權 F`，換成台指期**估算**點位，再與台指期實際日盤收盤或盤前夜盤價計算距離。日盤顯示 `txf_close`，不是把結算價改名；夜盤優先顯示 `preopen_price`，沒有盤前快照時仍顯示 `txf_night` 並標出交易日。位階換算基差和後端模型維持原算法。每列仍標示原始履約價，頁面下方顯示所用日期與基差。台指期價格取自期交所 `futDataDown`(商品代碼 `TX`),選 **OI 最大**的月份而非最近月。換月、不同到期與夜盤基差變化都會產生估算誤差；這不是逐筆同步報價。
 
 品質過濾門檻(`MIN_OI`、`MIN_PRICE`、`VALLEY_MIN_DEPTH`、`NEUTRAL_RATIO`)會顯著影響結果,都在 `scripts/txo_gex.py` 頂端可調整。
 

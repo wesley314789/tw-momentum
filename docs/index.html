@@ -196,7 +196,7 @@ tbody tr:hover{background:var(--surface)}
   <div class="gex-box">
     <div class="gex-head">
       <h2>台指選擇權 Gamma 結構</h2>
-      <span class="gex-f">台指期 <b id="gex-F"></b></span>
+      <span class="gex-f"><span id="gex-price-label">台指期收盤</span> <b id="gex-F"></b></span>
     </div>
     <div class="gex-model">
       <div class="gex-model-head">
@@ -620,8 +620,6 @@ fetch("./data/us_latest.json")
   .catch(()=>{});
 
 const CONCENTRATION_LEVELS = [
-  {k:"peak", label:"山頂 Peak（原版）", sub:"Call + Put gross gamma 最大；沿用原本 IV 算法"},
-  {k:"valley", label:"山谷 Valley（原版）", sub:"原本 gross gamma 的局部低點"},
   {k:"gamma_cluster_strike", label:"最強 Gamma Cluster", sub:"Call + Put 集中總量", v:"gamma_cluster_value"},
   {k:"call_concentration_peak", label:"Call Concentration", sub:"Call OI × |Gamma| 峰值", v:"call_concentration_value"},
   {k:"put_concentration_peak", label:"Put Concentration", sub:"Put OI × |Gamma| 峰值", v:"put_concentration_value"},
@@ -629,6 +627,8 @@ const CONCENTRATION_LEVELS = [
   {k:"concentration_valley", label:"Concentration Valley", sub:"Call + Put 的局部低點"},
 ];
 const SIGNED_GEX_LEVELS = [
+  {k:"peak", label:"山頂 Peak（原版）", sub:"Call + Put gross gamma 最大；非正負翻轉點"},
+  {k:"valley", label:"山谷 Valley（原版）", sub:"原本 gross gamma 的局部低點"},
   {k:"call_wall",  label:"Signed Call Wall", sub:"依賴方向假設"},
   {k:"macro_zero", label:"Signed Macro Zero", sub:"僅計 >7 天合約", flip:true},
   {k:"micro_flip", label:"Signed Micro Flip", sub:"正負 GEX 零軸", flip:true},
@@ -648,7 +648,11 @@ fetch("./data/gex_latest.json")
     // 盤前(當日夜盤已收、日盤未開):用夜盤價重算過的 regime 才是「現在」
     const hasBasis = Number.isFinite(d.txf_settle) && Number.isFinite(d.F);
     const pre = d.preopen_price != null && hasBasis;
-    $("gex-F").textContent = fmtPts(pre ? d.preopen_price : (d.txf_settle ?? d.F));
+    const dayClose = Number.isFinite(d.txf_close) ? d.txf_close : null;
+    const nightClose = Number.isFinite(d.preopen_price) ? d.preopen_price :
+                       (Number.isFinite(d.txf_night) ? d.txf_night : null);
+    $("gex-price-label").textContent = pre ? "台指期夜盤收盤" : "台指期收盤";
+    $("gex-F").textContent = fmtPts(pre ? d.preopen_price : dayClose);
     const regime = pre ? d.preopen_regime : d.regime;
     const ratio  = pre ? d.preopen_net_ratio : d.net_ratio;
 
@@ -661,7 +665,9 @@ fetch("./data/gex_latest.json")
       + (pre ? `(以 ${d.date} 的 OI 結構、${d.preopen_date} 夜盤價重算)` : "");
     // 履約價與隱含 F 共用選擇權座標；用當天已知的 TX 結算價-F 換到台指期座標。
     // 盤前仍固定使用上一個收盤日的基差，不偷看未結算的當日基差。
-    const anchor = pre ? d.preopen_price : (hasBasis ? d.txf_settle : (d.F ?? d.txf_settle));
+    // 顯示價及距離改用實際收盤；位階換算仍沿用已保存的結算基差，
+    // 與後端盤前重算相同，避免只改畫面就改變模型座標。
+    const anchor = pre ? d.preopen_price : (dayClose ?? d.F);
     const basis = hasBasis ? d.txf_settle - d.F : null;
     const txLevel = v => basis == null ? v : v + basis;
     const levelSub = (t, raw) => t.sub + (basis == null ? " · 選擇權座標" : ` · 履約價 ${fmtPts(raw)}`);
@@ -683,11 +689,12 @@ fetch("./data/gex_latest.json")
       .filter(t => d[t.k] != null)
       .map(t => ({price:txLevel(d[t.k]), label:t.label,
                   sub:levelSub(t, d[t.k]), cls:t.flip?"flip":""}));
-    if (pre)
-      items.push({price:d.preopen_price, label:"夜盤收",
-                  sub:`${d.preopen_date} 開盤前`, cls:"mark"});
-    if (d.txf_settle != null)
-      items.push({price:d.txf_settle, label:"台指期結算",
+    if (nightClose != null)
+      items.push({price:nightClose, label:"台指期夜盤收盤",
+                  sub:d.preopen_price != null ? `${d.preopen_date} 開盤前` : `${d.date} 交易日夜盤`,
+                  cls:pre?"mark":""});
+    if (dayClose != null)
+      items.push({price:dayClose, label:"台指期收盤",
                   sub:`${d.date}`, cls:pre?"":"mark"});
     items.sort((a,b) => b.price - a.price);
 
