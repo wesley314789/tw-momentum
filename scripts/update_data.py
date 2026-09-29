@@ -819,6 +819,15 @@ def enrich_and_write(merged: pd.DataFrame, idx_hist: pd.DataFrame | None = None)
     idx = idx_hist if idx_hist is not None else load_index_history()
     picks = momentum_screen(merged, shares, idx=idx)
     breadth, members = update_breadth(merged, shares, idx=idx)
+    try:
+        try:
+            import breakout
+        except ModuleNotFoundError:
+            from scripts import breakout
+        result["breakout_watchlist"], result["fresh_breakout"] = breakout.scan(merged, idx)
+    except Exception as e:
+        print(f"突破掃描失敗({e.__class__.__name__}): {e}")
+        result["breakout_watchlist"], result["fresh_breakout"] = [], []
     recs = [{k: (None if pd.isna(v) else v) for k, v in r.items()}
             for r in picks.to_dict("records")]
 
@@ -873,6 +882,8 @@ def enrich_and_write(merged: pd.DataFrame, idx_hist: pd.DataFrame | None = None)
     print(f"完成:{result['trade_date']} | 全市場 {result['universe']} 檔 | "
           f"SEPA {len(result['sepa'])} 檔 | 當日強勢 {len(result['daily'])} 檔 | "
           f"動能 {len(result['momentum'])} 檔 | "
+          f"整理候選 {len(result['breakout_watchlist'])} 檔 | "
+          f"今日突破 {len(result['fresh_breakout'])} 檔 | "
           f"上榜天數自 {mem_dates[0] if mem_dates else '—'} 起算")
     return True
 

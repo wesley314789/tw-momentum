@@ -45,11 +45,18 @@ data/gex_history.csv        滾動 280 個交易日的 GEX 位階歷史(自動�
 data/shares.csv             發行股數(算總市值用,每日更新)
 data/breadth.csv            每日通過動能篩選的檔數(市場廣度,自動維護)
 scripts/us_breadth.py       美股版動能篩選與廣度(Nasdaq screener + Yahoo)
+scripts/breakout.py         台股 Breakout Watchlist／Fresh Breakout（獨立於現有動能篩選）
 data/us_breadth.csv         美股每日通過檔數(自動維護)
 docs/data/us_latest.json    美股篩選結果與廣度序列(自動產生)
 ```
 
 ## 篩選邏輯
+
+**Breakout Watchlist／Fresh Breakout:** `scripts/breakout.py` 的 `BreakoutConfig` 集中管理 Pivot 60 日、距 Pivot 5%、突破延伸 3%、距52週高15%、高於52週低30%、RS20≥5個百分點、量比≤0.80、ATR比≤0.80、突破量比≥1.30。兩個新分頁獨立顯示，不改 SEPA、動能、廣度與題材的入選口徑。
+
+共通趨勢為收盤>MA50>MA150>MA200，且 MA200 高於20根K棒前的MA200，至少有252根歷史。RS20 沿用個股20日報酬減同日期加權指數20日報酬的算法。Pivot 取**今日以前**60根K棒最高價。Watchlist 收盤落在 Pivot 的95%～100%，且今日納入的 Vol5/Vol20、ATR5/ATR20 均≤0.80；`Range5 < Range10 < Range20` 只標記，不排除。Fresh Breakout 要求昨日收盤≤今天的 Pivot，今日收盤突破但不超過3%，今日量／**突破前**20日均量≥1.30；其展示的整理期 Vol、ATR、Range 也均截至昨天，不將突破日大量混入量縮欄位。兩組依距離、RS20、量比各自排序，不用綜合分數。
+
+這是可重跑的日線掃描，尚未做獲利回測；原始歷史價未作除權息還原，公司行為可能造成假訊號。可用 `python scripts/update_data.py --recompute` 更新網頁資料；`python tests/test_breakout.py` 驗證 Pivot／突破量的時間邊界。參數敏感度留給後續回測，不在第一版依候選數調整。
 
 **SEPA(七條件全過 + RS ≥ 70):**
 1. 收盤 > 150MA 且 > 200MA
