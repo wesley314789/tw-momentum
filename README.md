@@ -168,6 +168,14 @@ theme 填 **`-`** 代表「讀過本文、確定是個股因素或投機,不屬�
 
 規則是在已知七月案例後選定，仍屬回顧性研究，不能宣稱能預測崩盤或已通過真正樣本外驗證。全市場60MA比例不同於網站的動能篩選檔數。重跑：`python scripts/market_risk_study.py --out _market_risk_study.md`。
 
+### 台股價格與廣度轉弱提醒（Telegram）
+
+每日資料更新後檢查：加權指數連續 3 個交易日收在 20MA 下方，且「全市場站上 60MA 比例」與「動能上榜比例」都低於各自的 20 日均值及 10 個交易日前。只有從未成立變成成立才提醒一次；這是研究警戒，不是交易指令。若官方除權息資料暫時未補齊，會要求原始價和已知校正價的警戒方向一致才發送，並在訊息中註明。
+
+設定方法：先在 Telegram 透過 [@BotFather](https://t.me/BotFather) 建立機器人，對新機器人按 **Start**；在已登入 `gh` 的本機執行 `python scripts/setup_telegram_alert.py`。程式會隱藏 token 輸入、自動取得私人聊天室 ID，並把 `TELEGRAM_BOT_TOKEN` 與 `TELEGRAM_CHAT_ID` 存成此 repo 的 GitHub Actions Secrets，最後送一則測試訊息。**不要把 token 貼到公開 repo、指令列參數或聊天中。**
+
+排程在 `.github/workflows/daily.yml`。GitHub Actions 若延遲或跳過，提醒也會跟著延遲；程式會補看現有資料，但不會在資料尚未收齊時猜測警戒。
+
 ### 廣度跌破5／10／20日均線
 
 [均線跌破研究](reports/breadth_ma_study_2026-09-24.md)用網站同一篩選口徑重建長期廣度，另外核對網站已存資料。跌破指前日≥均線、當日<均線，收盤確認後從次日開盤觀察5／10／20交易日。事件至少相隔20日，一般交易日按事件年度配重，並用40日區塊重抽處理相關性。
