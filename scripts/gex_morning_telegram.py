@@ -54,7 +54,7 @@ def check_snapshot(data, state, today):
             "oi_date": data["date"], "price": number(data["preopen_price"])}
 
 
-def format_message(data):
+def format_message(data, *, demo=False):
     """Separate direction-free concentration from the signed dealer model."""
     basis = float(data["txf_settle"]) - float(data["F"])
     now = dt.datetime.now(TAIPEI)
@@ -65,13 +65,26 @@ def format_message(data):
         value = number(data.get(key))
         return f"{value + basis:,.0f}" if value is not None else "—"
 
+    regime_key = data["regime"] if demo else data["preopen_regime"]
     regime = {"positive": "正 Gamma", "negative": "負 Gamma",
-              "neutral": "中性／符號不可靠"}[data["preopen_regime"]]
-    ratio = number(data.get("preopen_net_ratio"))
+              "neutral": "中性／符號不可靠"}[regime_key]
+    ratio = number(data.get("net_ratio" if demo else "preopen_net_ratio"))
     ratio_text = f"{ratio * 100:.1f}%" if ratio is not None else "—"
+    if demo:
+        close = number(data.get("txf_close"))
+        if close is None:
+            raise ValueError("缺少台指期日盤收盤價，無法發送測試訊息")
+        title = f"🧪 台指期 GEX 測試推播｜{data['date']} 收盤資料｜送出 {delivery}"
+        price_line = f"台指期收盤 {close:,.0f} 點｜OI / IV：{data['date']} 收盤"
+        footer = "這是收盤資料測試訊息，不會占用明早的盤前通知。"
+    else:
+        title = f"🌅 台指期 GEX 盤前快照｜{data['preopen_date']}｜送出 {delivery}{timing}"
+        price_line = (f"夜盤收盤 {float(data['preopen_price']):,.0f} 點｜"
+                      f"OI / IV：{data['date']} 收盤")
+        footer = "盤前狀態依夜盤價格重算；位階仍是上一交易日的 OI 結構。"
     return "\n".join([
-        f"🌅 台指期 GEX 盤前快照｜{data['preopen_date']}｜送出 {delivery}{timing}",
-        f"夜盤收盤 {float(data['preopen_price']):,.0f} 點｜OI / IV：{data['date']} 收盤",
+        title,
+        price_line,
         "以下位階均換算為台指期點位（沿用前一收盤日基差）。",
         "",
         "📍 Gamma Concentration（不假設造市商持倉方向）",
@@ -82,9 +95,9 @@ def format_message(data):
         f"Call Wall {level('call_wall')}｜Put Wall {level('put_wall')}",
         f"山頂 {level('peak')}｜山谷 {level('valley')}",
         f"Micro Flip {level('micro_flip')}｜Macro Zero {level('macro_zero')}",
-        f"盤前狀態：{regime}｜淨／總 Gamma {ratio_text}",
+        f"{'收盤' if demo else '盤前'}狀態：{regime}｜淨／總 Gamma {ratio_text}",
         "",
-        "盤前狀態依夜盤價格重算；位階仍是上一交易日的 OI 結構。",
+        footer,
         "此模型不是方向預測或交易指令。",
     ])
 
@@ -124,23 +137,35 @@ def wait_until_eight():
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--send", action="store_true", help="正式發送，預設只預覽")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--send", action="store_true", help="正式發送，預設只預覽")
+    mode.add_argument("--demo", action="store_true", help="立即發送收盤資料測試訊息，不記錄為盤前通知")
     args = parser.parse_args()
     try:
         data = json.loads(LATEST.read_text(encoding="utf-8"))
-        state = json.loads(STATE.read_text(encoding="utf-8")) if STATE.exists() else {}
-        today = dt.datetime.now(TAIPEI).date()
-        result = check_snapshot(data, state, today)
-        if args.send and result["status"] == "ready":
+        if args.demo:
             token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
             chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
             if not token or not chat_id:
                 result = {"status": "error", "reason": "Telegram Secrets 尚未設定"}
             else:
-                wait_until_eight()
-                send_message(token, chat_id, format_message(data))
-                save_state(STATE, data["preopen_date"], data["date"])
-                result["status"] = "sent"
+                message = format_message(data, demo=True)
+                send_message(token, chat_id, message)
+                result = {"status": "demo_sent", "date": data["date"]}
+        else:
+            state = json.loads(STATE.read_text(encoding="utf-8")) if STATE.exists() else {}
+            today = dt.datetime.now(TAIPEI).date()
+            result = check_snapshot(data, state, today)
+            if args.send and result["status"] == "ready":
+                token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+                chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
+                if not token or not chat_id:
+                    result = {"status": "error", "reason": "Telegram Secrets 尚未設定"}
+                else:
+                    wait_until_eight()
+                    send_message(token, chat_id, format_message(data))
+                    save_state(STATE, data["preopen_date"], data["date"])
+                    result["status"] = "sent"
     except Exception as exc:
         # send_message only raises credential-free errors.
         result = {"status": "error", "reason": f"{type(exc).__name__}: {exc}"}

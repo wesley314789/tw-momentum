@@ -45,6 +45,14 @@ assert "Gamma Concentration" in message and "Signed GEX" in message
 assert "山谷 —" in message
 assert "token" not in message.lower()
 
+demo_sample = dict(sample, txf_close=103., regime="negative", net_ratio=-.3)
+demo_message = alert.format_message(demo_sample, demo=True)
+assert "測試推播" in demo_message and "2026-10-01 收盤資料" in demo_message
+assert "台指期收盤 103 點" in demo_message
+assert "收盤狀態：負 Gamma" in demo_message
+assert "盤前快照" not in demo_message and "夜盤收盤" not in demo_message
+assert "不會占用明早" in demo_message
+
 with tempfile.TemporaryDirectory() as folder:
     state_path = Path(folder) / "state.json"
     delivered = []

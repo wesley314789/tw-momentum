@@ -6,7 +6,12 @@ on:
     # 避開整點較容易延遲的 GitHub 排程尖峰。
     - cron: "55 23 * * 0-5"
     - cron: "20 0 * * 1-6"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      demo:
+        description: "立即發送一則收盤資料測試訊息（不占用正式早報）"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -38,7 +43,12 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python scripts/gex_morning_telegram.py --send
+        run: |
+          if [ "${{ inputs.demo }}" = "true" ]; then
+            python scripts/gex_morning_telegram.py --demo
+          else
+            python scripts/gex_morning_telegram.py --send
+          fi
 
       - name: Commit GEX and notification state
         run: |
