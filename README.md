@@ -234,6 +234,8 @@ Concentration Valley 找**Call+Put concentration 的局部低點**,不是區間�
 
 **Telegram 早上 GEX 摘要**：`.github/workflows/gex-morning-telegram.yml` 預定台北 07:55 啟動、最早 08:00 發送，08:20 再檢查一次，沿用市場警戒設定的 `TELEGRAM_BOT_TOKEN` 與 `TELEGRAM_CHAT_ID`。只有 `preopen_date` 等於當天且夜盤價格、盤前重算都完整時才發送；休市與舊資料不重複發。訊息將 Gamma Concentration 與依賴造市商方向假設的 Signed GEX 分段，位階用上次已知基差換算成台指期點位。發送成功後才更新 `data/gex_telegram_state.json`。GitHub 排程可能誤點或跳過，若要更接近 08:00，應另外用外部 cron 在 08:00 呼叫此 workflow 的 `workflow_dispatch`；重複觸發會由日期狀態擋住。
 
+**Telegram 早上動能新上榜**：同一個 workflow 另外發送前一交易日新進「動能篩選」的股票（網站上「上榜：新」，即連續上榜天數為 1）。訊息依成交值由高到低列出代號、名稱、題材和對大盤的超額漲幅，檔數太多時分則發送；沒有新股票也會回報 0 檔。資料必須和當日市場廣度一致、已收盤且距當天不超過 4 個日曆日。成功後更新 `data/momentum_telegram_state.json`，補跑只續送未完成的分則；GEX 測試推播不會觸發這則正式股票訊息。股價與題材皆取自前一交易日收盤資料，不是 08:00 的即時行情。
+
 前端以**價格階梯**呈現:原始 GEX 履約價與 Flip 仍保存在 `data/gex_history.csv` / `docs/data/gex_latest.json`，網站顯示時才加上同日已知的 `台指期結算價 - 選擇權 F`，換成台指期**估算**點位，再與台指期實際日盤收盤或盤前夜盤價計算距離。日盤顯示 `txf_close`，不是把結算價改名；夜盤優先顯示 `preopen_price`，沒有盤前快照時仍顯示 `txf_night` 並標出交易日。位階換算基差和後端模型維持原算法。每列仍標示原始履約價，頁面下方顯示所用日期與基差。台指期價格取自期交所 `futDataDown`(商品代碼 `TX`),選 **OI 最大**的月份而非最近月。換月、不同到期與夜盤基差變化都會產生估算誤差；這不是逐筆同步報價。
 
 品質過濾門檻(`MIN_OI`、`MIN_PRICE`、`VALLEY_MIN_DEPTH`、`NEUTRAL_RATIO`)會顯著影響結果,都在 `scripts/txo_gex.py` 頂端可調整。

@@ -50,11 +50,20 @@ jobs:
             python scripts/gex_morning_telegram.py --send
           fi
 
+      - name: Send newly listed momentum stocks to Telegram
+        id: stocks
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.demo != true }}
+        continue-on-error: true
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python scripts/momentum_morning_telegram.py --send
+
       - name: Commit GEX and notification state
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/gex_history.csv docs/data/gex_latest.json docs/data/gex_debug.json data/gex_telegram_state.json
+          git add data/gex_history.csv docs/data/gex_latest.json docs/data/gex_debug.json data/gex_telegram_state.json data/momentum_telegram_state.json
           if git diff --cached --quiet; then
             echo "沒有變更。"
             exit 0
@@ -69,5 +78,5 @@ jobs:
           exit 1
 
       - name: Report Telegram failure
-        if: steps.send.outcome == 'failure'
+        if: steps.send.outcome == 'failure' || steps.stocks.outcome == 'failure'
         run: exit 1
