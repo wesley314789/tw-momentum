@@ -49,16 +49,19 @@ def check_snapshot(data: dict, state: dict, today: dt.date) -> dict:
             "new_count": sum(p["days"] == 1 for p in picks)}
 
 
-def format_messages(data: dict) -> list[str]:
+def format_messages(data: dict, *, demo: bool = False) -> list[str]:
     """Include every new name, splitting only when Telegram's size limit requires it."""
     picks = sorted((p for p in data["momentum"] if p["days"] == 1),
                    key=lambda p: (-float(p.get("value") or 0),
                                   -float(p.get("excess_1m") or 0), str(p.get("code", ""))))
     breadth = data["breadth"][-1]
-    base = (f"📈 動能新上榜｜{data['trade_date']} 收盤\n"
+    title = "🧪 動能新上榜測試" if demo else "📈 動能新上榜"
+    base = (f"{title}｜{data['trade_date']} 收盤\n"
             f"新增 {len(picks)} 檔｜動能榜 {len(data['momentum'])} 檔"
             f"｜市場廣度 {float(breadth['pct']):.2f}%\n"
             "依成交值由高到低")
+    if demo:
+        base += "\n這是測試訊息，不影響正式早報。"
     if not picks:
         return [base + "\n今天沒有新進個股。"]
 
@@ -110,21 +113,36 @@ def deliver(data: dict, state: dict, path: Path, token: str, chat_id: str) -> di
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--send", action="store_true", help="正式發送；預設只檢查")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--send", action="store_true", help="正式發送；預設只檢查")
+    mode.add_argument("--demo", action="store_true", help="立即送一則測試名單，不更新正式通知紀錄")
     args = parser.parse_args()
     try:
         data = json.loads(LATEST.read_text(encoding="utf-8"))
         state = json.loads(STATE.read_text(encoding="utf-8")) if STATE.exists() else {}
         today = dt.datetime.now(TAIPEI).date()
-        result = check_snapshot(data, state, today)
-        if args.send and result["status"] == "ready":
+        if args.demo:
             token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
             chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
             if not token or not chat_id:
                 result = {"status": "error", "reason": "Telegram Secrets 尚未設定"}
             else:
-                wait_until_eight()
-                result = deliver(data, state, STATE, token, chat_id)
+                messages = format_messages(data, demo=True)
+                for message in messages:
+                    send_message(token, chat_id, message)
+                result = {"status": "demo_sent", "trade_date": data["trade_date"],
+                          "new_count": sum(p["days"] == 1 for p in data["momentum"]),
+                          "messages": len(messages)}
+        else:
+            result = check_snapshot(data, state, today)
+            if args.send and result["status"] == "ready":
+                token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+                chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
+                if not token or not chat_id:
+                    result = {"status": "error", "reason": "Telegram Secrets 尚未設定"}
+                else:
+                    wait_until_eight()
+                    result = deliver(data, state, STATE, token, chat_id)
     except Exception as exc:
         result = {"status": "error", "reason": f"{type(exc).__name__}: {exc}"}
     print(json.dumps(result, ensure_ascii=False, allow_nan=False))

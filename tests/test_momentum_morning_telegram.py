@@ -1,8 +1,11 @@
 """Freshness, full-list formatting, and resume after a partial Telegram send."""
 
 import json
+import io
+import os
 import sys
 import tempfile
+from contextlib import redirect_stdout
 from datetime import date
 from pathlib import Path
 
@@ -36,6 +39,8 @@ assert message.index("2222 High") < message.index("1111 Low")
 assert "新增 2 檔" in message and "未歸類" in message
 assert "2026-10-02 收盤" in message
 assert len(message) < alert.MAX_MESSAGE_CHARS
+demo_message = alert.format_messages(sample, demo=True)[0]
+assert "動能新上榜測試" in demo_message and "不影響正式早報" in demo_message
 
 no_new = dict(sample, momentum=[dict(p, days=2) for p in sample["momentum"]])
 assert "今天沒有新進個股" in alert.format_messages(no_new)[0]
@@ -73,5 +78,19 @@ with tempfile.TemporaryDirectory() as folder:
     state = json.loads(state_path.read_text(encoding="utf-8"))
     assert state == {"last_sent_trade_date": "2026-10-02"}
     assert alert.check_snapshot(many, state, date(2026, 10, 3))["status"] == "quiet"
+
+    latest_path = Path(folder) / "latest.json"
+    latest_path.write_text(json.dumps(sample), encoding="utf-8")
+    alert.LATEST, alert.STATE = latest_path, state_path
+    alert.send_message = lambda token, chat_id, text: sent.append(text)
+    os.environ["TELEGRAM_BOT_TOKEN"] = "test-token"
+    os.environ["TELEGRAM_CHAT_ID"] = "test-chat"
+    sys.argv = ["momentum_morning_telegram.py", "--demo"]
+    before = state_path.read_text(encoding="utf-8")
+    with redirect_stdout(io.StringIO()) as output:
+        assert alert.main() == 0
+    assert json.loads(output.getvalue())["status"] == "demo_sent"
+    assert sent[-1] == demo_message
+    assert state_path.read_text(encoding="utf-8") == before
 
 print("Momentum Telegram checks passed")

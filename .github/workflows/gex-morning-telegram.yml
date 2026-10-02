@@ -12,6 +12,10 @@ on:
         description: "立即發送一則收盤資料測試訊息（不占用正式早報）"
         type: boolean
         default: false
+      stocks_demo:
+        description: "立即發送動能新上榜測試名單（不占用正式早報）"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -34,11 +38,13 @@ jobs:
         run: pip install pandas numpy scipy requests
 
       - name: Refresh GEX preopen snapshot
+        if: ${{ inputs.stocks_demo != true }}
         continue-on-error: true
         run: python scripts/txo_gex.py
 
       - name: Send fresh GEX snapshot to Telegram
         id: send
+        if: ${{ inputs.stocks_demo != true }}
         continue-on-error: true
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -57,7 +63,12 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python scripts/momentum_morning_telegram.py --send
+        run: |
+          if [ "${{ inputs.stocks_demo }}" = "true" ]; then
+            python scripts/momentum_morning_telegram.py --demo
+          else
+            python scripts/momentum_morning_telegram.py --send
+          fi
 
       - name: Commit GEX and notification state
         run: |
