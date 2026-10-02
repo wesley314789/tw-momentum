@@ -461,7 +461,9 @@ function render(){
 
 function renderThemes(){
   const us = tab==="usthemes";
-  const groups = (us ? (DATA.us_meta||{}).themes : DATA.themes) || [];
+  // 既有 JSON 也在畫面上依總成交值排序；未歸類維持最後。
+  const groups = ((us ? (DATA.us_meta||{}).themes : DATA.themes) || []).slice()
+    .sort((a,b)=>(a.theme==="未歸類")-(b.theme==="未歸類") || b.value-a.value);
   const picks  = (us ? DATA.us : DATA.momentum) || [];
   if(!groups.length){
     $("themes-panel").innerHTML = `<div class="empty">${us

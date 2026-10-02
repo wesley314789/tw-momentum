@@ -286,5 +286,5 @@ def summarize(picks: list[dict], value_key: str = "value") -> list[dict]:
         g["perf"] = round(g["perf"] / g["count"], 1)
         g["names"] = g["names"][:8]
         out.append(g)
-    # 未歸類永遠排最後, 其餘依檔數
-    return sorted(out, key=lambda g: (g["theme"] == "未歸類", -g["count"]))
+    # 未歸類永遠排最後, 其餘依族群總成交值由高到低
+    return sorted(out, key=lambda g: (g["theme"] == "未歸類", -g["value"]))
