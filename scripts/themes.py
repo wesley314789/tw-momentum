@@ -1,18 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-themes.py — 從新聞標題判斷個股的族群題材
+themes.py — 台股題材以查證過的人工覆寫為準。
 
-做法很單純:對每檔股票抓 Google News RSS 的標題, 用關鍵字比對歸類。台股的
-題材詞相當標準(CPO、磷化銦、散熱、軍工、記憶體…), 所以光靠標題就抓得到
-大部分。
-
-刻意不用 LLM:這支要跑在 GitHub Actions 的排程裡, 保持免費且無外部相依。
-代價是**新題材抓不到**(詞典裡沒有的詞就是沒有), 也無法判斷某則新聞是不是
-真的在講上漲原因。所以原始標題會一併存下來 —— 歸不了類的時候, 人可以直接
-翻標題自己判斷, 也可以之後把這批標題餵給 LLM 做更好的分類。
-
-被列處置股/注意股會另外標記:那代表短期漲太兇被盯上, 是風險訊號而不是題材。
+Google News 標題只保留為查找本文的線索，不能自動決定題材。
+既有關鍵字工具供其他流程使用；台股 annotate 不採用其分類結果。
+注意股與處置股旗標仍由標題提示，並不代表題材已查證。
 """
 import csv
 import re
@@ -23,15 +16,14 @@ from pathlib import Path
 
 import requests
 
-# 人工(或排程的 Claude 任務)研究出來的題材, 優先於關鍵字比對。
+# 人工/排程研究並讀過本文的題材, 是台股唯一分類來源。
 # 欄位: code, theme, source, updated —— source 記下判斷依據, 方便事後回頭驗證。
 OVERRIDES_PATH = Path(__file__).resolve().parent.parent / "data" / "theme_overrides.csv"
 
 RSS = "https://news.google.com/rss/search?q={}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 WORKERS = 4
-MAX_ITEMS = 12         # 每檔取幾則標題。Google News 每次回傳的結果會變, 取多
-                       # 一點才穩 —— 只取 6 則時同一檔前後兩次會歸到不同題材
+MAX_ITEMS = 12         # 多取幾則標題供人工查找本文; 不用於台股題材判斷
 MIN_HITS = 2           # 要有幾「則」不同的新聞提到才算, 不是關鍵字出現幾次:
                        # 用次數計分會被單一則大量堆疊關鍵字的新聞主導
 
@@ -247,8 +239,7 @@ def annotate(picks: list[dict]) -> list[dict]:
     對篩選結果標上題材與旗標, 並附上前三則標題供人工覆核。
     picks 需含 code / name 欄位, 就地加上 theme / flags / news。
 
-    theme_overrides.csv 裡有的個股直接採用該題材(關鍵字比對抓不到新題材,
-    所以留一條人工/LLM 補強的路), 並標 theme_src 讓前端能區分來源。
+    theme_overrides.csv 是唯一題材來源; 新聞標題僅供人工查找本文, 不參與題材判斷。
     """
     if not picks:
         return picks
@@ -256,13 +247,15 @@ def annotate(picks: list[dict]) -> list[dict]:
     news = fetch_all([(p["code"], p["name"]) for p in picks])
     for p in picks:
         heads = news.get(p["code"], [])
-        theme, flags = classify(heads, p.get("name", ""))
+        scored = strip_name(heads, p.get("name", ""))
+        blob = " ".join(scored)
+        flags = [f for f, pats in _FLAG_LEX.items() if any(pat.search(blob) for pat in pats)]
         if p["code"] in ov:
             p["theme"] = ov[p["code"]]
             p["theme_src"] = "override"
         else:
-            p["theme"] = theme
-            p["theme_src"] = "keyword" if theme else None
+            p["theme"] = None
+            p["theme_src"] = None
         p["flags"] = flags
         p["news"] = heads[:3]
     return picks

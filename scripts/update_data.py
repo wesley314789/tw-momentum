@@ -536,27 +536,13 @@ def theme_delta(members: pd.DataFrame, dates: list[str],
     """
     每個題材相對前一個交易日的檔數增減。
 
-    前一天的個股用**最後一次看到的題材**來歸類, 不是重跑一次當天的新聞 ——
-    昨天掉出名單的個股今天不會被標註, 沒有標籤可用; 而且要比較的是「這個族群
-    的檔數變多還是變少」, 兩天用同一套標籤才比得準。今天有標註的以今天為準,
-    這樣人工覆寫或題材改名會同時套用到兩邊, 不會憑空生出一組差值。
-
-    forced 是覆寫檔(load_overrides)的內容, 最後套用而且 None 也算數 —— 覆寫檔
-    裡填 "-" 的個股是「查過、確定不屬於任何族群」。today_theme 會把沒有標籤的
-    濾掉(那通常代表「還沒查」), 所以不另外處理的話, 被 "-" 蓋掉的個股前一天會
-    退回歷史上那個錯的標籤: 只要它還在榜上, 網頁就每天顯示「原題材 -1、未歸類
-    +1」, 其實什麼都沒變。
+    兩天使用同一套已查證的覆寫題材。歷史名單曾含標題關鍵字分類，
+    不能再把這些未查證標籤沿用到前一天；沒有覆寫的股票算未歸類。
+    forced 包含覆寫檔的「-」記錄，值為 None，也須蓋掉舊分類。
     """
     if members.empty or len(dates) < 2:
         return {}
-    last = {}
-    for code, g in members.groupby("code"):
-        g = g.sort_values("date")
-        known = g["theme"].dropna()
-        known = known[known != ""]
-        if len(known):
-            last[code] = known.iloc[-1]
-    label = {**last, **{k: v for k, v in today_theme.items() if v}, **(forced or {})}
+    label = {**today_theme, **(forced or {})}
 
     prev_day = dates[-2]
     prev = members[members["date"] == prev_day]["code"]
@@ -831,8 +817,8 @@ def enrich_and_write(merged: pd.DataFrame, idx_hist: pd.DataFrame | None = None)
     recs = [{k: (None if pd.isna(v) else v) for k, v in r.items()}
             for r in picks.to_dict("records")]
 
-    # 從新聞標題判斷題材。純關鍵字比對, 抓不到就留白 —— 標題會一起輸出,
-    # 歸不了類時可以直接翻。失敗不影響前面算好的東西。
+    # 台股題材僅採用已查證覆寫檔; 新聞標題只供人工查找本文。
+    # 題材標註失敗不影響篩選與價格結果。
     themes = None
     try:
         try:
