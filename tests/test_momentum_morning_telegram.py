@@ -25,14 +25,16 @@ sample = {
     ],
 }
 
-assert alert.check_snapshot(sample, {}, date(2026, 10, 3)) == {
+assert alert.check_snapshot(sample, {}, date(2026, 10, 3))["status"] == "skip"
+assert alert.check_snapshot(sample, {}, date(2026, 10, 4))["status"] == "skip"
+assert alert.check_snapshot(sample, {}, date(2026, 10, 5)) == {
     "status": "ready", "trade_date": "2026-10-02", "new_count": 2}
 assert alert.check_snapshot(sample, {}, date(2026, 10, 2))["status"] == "skip"
 assert alert.check_snapshot(sample, {}, date(2026, 10, 7))["status"] == "skip"
 assert alert.check_snapshot(sample, {"last_sent_trade_date": "2026-10-02"},
-                            date(2026, 10, 3))["status"] == "quiet"
+                            date(2026, 10, 5))["status"] == "quiet"
 assert alert.check_snapshot(dict(sample, breadth=[{"date": "2026-10-02", "count": 1}]),
-                            {}, date(2026, 10, 3))["status"] == "error"
+                            {}, date(2026, 10, 5))["status"] == "error"
 
 message = alert.format_messages(sample)[0]
 assert message.index("2222 High") < message.index("1111 Low")
@@ -77,7 +79,7 @@ with tempfile.TemporaryDirectory() as folder:
     assert result["status"] == "sent" and sent == parts
     state = json.loads(state_path.read_text(encoding="utf-8"))
     assert state == {"last_sent_trade_date": "2026-10-02"}
-    assert alert.check_snapshot(many, state, date(2026, 10, 3))["status"] == "quiet"
+    assert alert.check_snapshot(many, state, date(2026, 10, 5))["status"] == "quiet"
 
     latest_path = Path(folder) / "latest.json"
     latest_path.write_text(json.dumps(sample), encoding="utf-8")

@@ -25,6 +25,9 @@ MAX_MESSAGE_CHARS = 3500  # Telegram's text limit is 4096 characters.
 
 def check_snapshot(data: dict, state: dict, today: dt.date) -> dict:
     """Reject partial/stale data and never resend a completed trading date."""
+    # The external 08:00 dispatch runs every day. Keep Friday's list for Monday.
+    if today.weekday() >= 5:
+        return {"status": "skip", "reason": "週末不發送股票早報"}
     try:
         trade_date = dt.date.fromisoformat(data["trade_date"])
     except (KeyError, TypeError, ValueError):
