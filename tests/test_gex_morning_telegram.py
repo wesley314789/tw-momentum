@@ -43,6 +43,10 @@ assert "Call Wall 112" in message  # 110 option strike + 2 futures basis
 assert "Put Wall 92" in message
 assert "Gamma Concentration" in message and "Signed GEX" in message
 assert "山谷 —" in message
+assert "｜" not in message
+assert "Call 集中 110\nPut 集中 93" in message
+assert "Call Wall 112\nPut Wall 92" in message
+assert "Micro Flip 102\nMacro Zero —" in message
 assert "token" not in message.lower()
 
 demo_sample = dict(sample, txf_close=103., regime="negative", net_ratio=-.3)
@@ -51,6 +55,7 @@ assert "測試推播" in demo_message and "2026-10-01 收盤資料" in demo_mess
 assert "台指期收盤 103 點" in demo_message
 assert "收盤狀態：負 Gamma" in demo_message
 assert "盤前快照" not in demo_message and "夜盤收盤" not in demo_message
+assert "延遲送達" not in demo_message
 assert "不會占用明早" in demo_message
 
 with tempfile.TemporaryDirectory() as folder:

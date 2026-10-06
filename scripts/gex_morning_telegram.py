@@ -74,28 +74,39 @@ def format_message(data, *, demo=False):
         close = number(data.get("txf_close"))
         if close is None:
             raise ValueError("缺少台指期日盤收盤價，無法發送測試訊息")
-        title = f"🧪 台指期 GEX 測試推播｜{data['date']} 收盤資料｜送出 {delivery}"
-        price_line = f"台指期收盤 {close:,.0f} 點｜OI / IV：{data['date']} 收盤"
+        title = "🧪 台指期 GEX 測試推播"
+        date_line = f"資料日期：{data['date']} 收盤資料"
+        price_line = f"台指期收盤 {close:,.0f} 點"
         footer = "這是收盤資料測試訊息，不會占用明早的盤前通知。"
     else:
-        title = f"🌅 台指期 GEX 盤前快照｜{data['preopen_date']}｜送出 {delivery}{timing}"
-        price_line = (f"夜盤收盤 {float(data['preopen_price']):,.0f} 點｜"
-                      f"OI / IV：{data['date']} 收盤")
+        title = "🌅 台指期 GEX 盤前快照"
+        date_line = f"快照日期：{data['preopen_date']}"
+        price_line = f"夜盤收盤 {float(data['preopen_price']):,.0f} 點"
         footer = "盤前狀態依夜盤價格重算；位階仍是上一交易日的 OI 結構。"
     return "\n".join([
         title,
+        date_line,
+        f"送出時間：{delivery}{'' if demo else timing}",
         price_line,
+        f"OI / IV：{data['date']} 收盤",
         "以下位階均換算為台指期點位（沿用前一收盤日基差）。",
         "",
         "📍 Gamma Concentration（不假設造市商持倉方向）",
-        f"Call 集中 {level('call_concentration_peak')}｜Put 集中 {level('put_concentration_peak')}",
-        f"最強聚集 {level('gamma_cluster_strike')}｜集中峰 {level('concentration_peak')}｜谷 {level('concentration_valley')}",
+        f"Call 集中 {level('call_concentration_peak')}",
+        f"Put 集中 {level('put_concentration_peak')}",
+        f"最強聚集 {level('gamma_cluster_strike')}",
+        f"集中峰 {level('concentration_peak')}",
+        f"集中谷 {level('concentration_valley')}",
         "",
         "⚖️ Signed GEX（造市商方向假設）",
-        f"Call Wall {level('call_wall')}｜Put Wall {level('put_wall')}",
-        f"山頂 {level('peak')}｜山谷 {level('valley')}",
-        f"Micro Flip {level('micro_flip')}｜Macro Zero {level('macro_zero')}",
-        f"{'收盤' if demo else '盤前'}狀態：{regime}｜淨／總 Gamma {ratio_text}",
+        f"Call Wall {level('call_wall')}",
+        f"Put Wall {level('put_wall')}",
+        f"山頂 {level('peak')}",
+        f"山谷 {level('valley')}",
+        f"Micro Flip {level('micro_flip')}",
+        f"Macro Zero {level('macro_zero')}",
+        f"{'收盤' if demo else '盤前'}狀態：{regime}",
+        f"淨／總 Gamma：{ratio_text}",
         "",
         footer,
         "此模型不是方向預測或交易指令。",
