@@ -837,6 +837,20 @@ def enrich_and_write(merged: pd.DataFrame, idx_hist: pd.DataFrame | None = None)
         print(f"題材判斷失敗({e.__class__.__name__}),略過。")
         result["themes"] = []
 
+    # 產業動能沿用同一份日線、加權指數及已核對題材對照表；
+    # 與原 Breakout scanner 各自輸出，避免修改原本嚴格的候選條件。
+    try:
+        try:
+            import sector_breadth
+        except ModuleNotFoundError:
+            from scripts import sector_breadth
+        sector_map = themes.load_overrides() if themes else {}
+        result["sector_breadth"] = sector_breadth.calculate(
+            merged, sector_map, index_lookup(idx))
+    except Exception as e:
+        print(f"產業動能計算失敗({e.__class__.__name__}): {e}")
+        result["sector_breadth"] = {"date": result["trade_date"], "sectors": []}
+
     # 上榜天數。用有紀錄的交易日序列, 不是日曆天 —— 隔週末不算中斷。
     mem_dates = sorted(members["date"].unique())
     st = streaks(members, mem_dates)

@@ -166,10 +166,45 @@ tbody tr:hover{background:var(--surface)}
 .flag{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:4px;
   font-size:11px;font-family:var(--sans);background:var(--up-dim);color:var(--up)}
 
+/* 產業動能：長條表示日變化的絕對百分點，不表示 Strong %。 */
+.sector-card{margin:8px 0 22px;border:1px solid var(--line);border-radius:10px;
+  background:var(--surface);padding:16px}
+.sector-top{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:5px}
+.sector-top h2{font-size:16px}
+.sector-top select{margin-left:auto;background:var(--surface-2);color:var(--text);
+  border:1px solid var(--line);border-radius:6px;padding:6px 10px;font:inherit}
+.sector-note{color:var(--muted);font-size:11px;margin-bottom:12px}
+.sector-item{border-top:1px solid var(--line)}
+.sector-item summary{list-style:none;cursor:pointer;padding:10px 2px}
+.sector-item summary::-webkit-details-marker{display:none}
+.sector-item summary:focus-visible{outline:2px solid var(--amber)}
+.sector-line{display:grid;grid-template-columns:minmax(150px,1.5fr) minmax(100px,2fr) 80px;
+  gap:12px;align-items:center}
+.sector-name{font-weight:700;min-width:0;overflow-wrap:anywhere}
+.sector-name small{font:11px var(--mono);color:var(--muted);margin-left:6px}
+.sector-track{height:8px;border-radius:4px;background:var(--surface-2);overflow:hidden}
+.sector-fill{display:block;height:100%;border-radius:4px}
+.sector-fill.up{background:var(--up)}.sector-fill.down{background:var(--down)}
+.sector-delta{text-align:right;font:600 13px var(--mono)}
+.sector-metrics{display:flex;gap:14px;flex-wrap:wrap;color:var(--muted);
+  font:11px var(--mono);margin-top:5px}
+.sector-metrics b{color:var(--text)}
+.sector-members{overflow-x:auto;padding:0 0 10px}
+.sector-members table{min-width:720px}
+.sector-members th{text-align:left;position:static}
+.sector-members td{text-align:left}
+.sector-members tr{cursor:default}
+.sector-move.up{color:var(--up)}.sector-move.down{color:var(--down)}
+.sector-more{display:block;margin:12px auto 0;padding:6px 14px;border:1px solid var(--line);
+  border-radius:6px;background:var(--surface-2);color:var(--text);font:inherit;cursor:pointer}
+.sector-more:hover{border-color:var(--muted)}
+
 @media(max-width:640px){
   .controls input{width:130px}
   thead th,tbody td{padding:8px 8px}
   .col-opt{display:none}
+  .sector-line{grid-template-columns:minmax(95px,1fr) minmax(70px,1fr) 72px;gap:7px}
+  .sector-metrics{gap:8px}
 }
 @media(prefers-reduced-motion:reduce){*{transition:none!important}}
 </style>
@@ -229,6 +264,19 @@ tbody tr:hover{background:var(--surface)}
 </div>
 
 <main>
+  <section class="sector-card" id="sector-panel" hidden>
+    <div class="sector-top">
+      <h2>產業動能 / Sector Breadth</h2>
+      <select id="sector-sort" aria-label="產業動能排序">
+        <option value="delta_1d_pp">Δ1D</option>
+        <option value="strong_pct">Strong %</option>
+        <option value="pivot_pct">Pivot %</option>
+        <option value="breakout_pct">Breakout %</option>
+      </select>
+    </div>
+    <div class="sector-note" id="sector-note"></div>
+    <div id="sector-list"></div>
+  </section>
   <table id="stock-table">
     <thead><tr id="thead"></tr></thead>
     <tbody id="tbody"></tbody>
@@ -306,8 +354,74 @@ const COLS_US = [
 let DATA = {daily:[], momentum:[], breakout_watchlist:[], fresh_breakout:[], breadth:[], us:[], usbreadth:[]};
 let tab = "daily";
 let sortKey = "chg_pct", sortDir = -1;
+const sectorOpen = new Set();
+let sectorExpanded = false;
 
 const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g,
+  c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"})[c]);
+const sectorPct = n => n == null ? "—" : `${n.toFixed(1)}%`;
+const sectorStatus = {
+  FRESH_BREAKOUT:"今日突破", AT_PIVOT:"接近 Pivot", WATCH:"觀察區",
+  EXTENDED:"已延伸", ABOVE_PIVOT:"已過 Pivot", FAR_BELOW:"遠離 Pivot"
+};
+
+function renderSectorBreadth(){
+  const payload = DATA.sector_breadth;
+  const all = (payload?.sectors || []).filter(x=>!x.small_sample);
+  $("sector-panel").hidden = !payload;
+  if(!payload) return;
+  $("sector-note").textContent = `${payload.date || "—"} 收盤 · 僅統計已核對題材標籤且行情足夠的 ${payload.valid_stocks ?? 0} / ${payload.universe_stocks ?? "—"} 檔；`
+    + `每組至少 3 檔，並非全市場產業覆蓋。Δ1D 為相對前一交易日的百分點。`;
+  if(!all.length){
+    $("sector-list").textContent = "目前沒有達到 3 檔有效樣本的題材。";
+    return;
+  }
+  const key = $("sector-sort").value;
+  all.sort((a,b)=>(b[key] ?? -Infinity)-(a[key] ?? -Infinity) || a.sector.localeCompare(b.sector,"zh-Hant"));
+  const maxAbs = Math.max(1,...all.map(x=>Math.abs(x.delta_1d_pp ?? 0)));
+  const shown = sectorExpanded ? all : all.slice(0,6);
+  $("sector-list").innerHTML = shown.map(g=>{
+    const delta = g.delta_1d_pp;
+    const sign = delta == null ? "" : delta > 0 ? "+" : "";
+    const direction = delta > 0 ? "up" : delta < 0 ? "down" : "flat";
+    const width = delta == null ? 0 : Math.abs(delta)/maxAbs*100;
+    const rows = (g.stocks||[]).map(s=>{
+      const movement = s.strong_change === 1 ? "新轉強" : s.strong_change === -1 ? "轉弱"
+        : s.strong_change == null ? "新納入樣本" : "";
+      const moveClass = s.strong_change > 0 ? "up" : s.strong_change < 0 ? "down" : "";
+      return `<tr><td>${esc(s.code)}</td><td>${esc(s.name)}</td>
+        <td>${s.close == null ? "—" : s.close.toLocaleString("en")}</td>
+        <td>${s.strong_score}/6</td><td>${sectorPct(s.pivot_distance_pct)}</td>
+        <td>${sectorStatus[s.pivot_status] || "—"}</td>
+        <td class="sector-move ${moveClass}">${movement}</td></tr>`;
+    }).join("");
+    return `<details class="sector-item" data-sector="${esc(g.sector)}" ${sectorOpen.has(g.sector)?"open":""}>
+      <summary><div class="sector-line">
+        <span class="sector-name">${esc(g.sector)}<small>${g.total_stocks} 檔${
+          g.previous_total_stocks !== g.total_stocks ? `（昨 ${g.previous_total_stocks}）` : ""}</small></span>
+        <span class="sector-track"><span class="sector-fill ${direction}" style="width:${width.toFixed(2)}%"></span></span>
+        <span class="sector-delta ${direction}">${delta == null ? "—" : sign+delta.toFixed(1)+"pp"}</span>
+      </div><div class="sector-metrics"><span>Strong <b>${sectorPct(g.strong_pct)}</b></span>
+        <span>Pivot <b>${sectorPct(g.pivot_pct)}</b></span>
+        <span>Breakout <b>${sectorPct(g.breakout_pct)}</b></span>
+        <span>昨日 Strong <b>${sectorPct(g.previous_strong_pct)}</b></span></div></summary>
+      <div class="sector-members"><table><thead><tr><th>代號</th><th>名稱</th><th>收盤</th>
+        <th>Strong Score</th><th>距 Pivot</th><th>Pivot 狀態</th><th>對昨日</th></tr></thead>
+        <tbody>${rows}</tbody></table></div></details>`;
+  }).join("") + (all.length>6 ? `<button class="sector-more" type="button">${
+    sectorExpanded ? "收起排行" : `顯示全部 ${all.length} 組`}</button>` : "");
+  $("sector-list").querySelectorAll("details").forEach(el=>{
+    el.addEventListener("toggle",()=>{
+      if(el.open) sectorOpen.add(el.dataset.sector); else sectorOpen.delete(el.dataset.sector);
+    });
+  });
+  $("sector-list").querySelector(".sector-more")?.addEventListener("click",()=>{
+    sectorExpanded = !sectorExpanded;
+    renderSectorBreadth();
+  });
+}
+$("sector-sort").addEventListener("change",renderSectorBreadth);
 const cols = () => tab==="us" ? COLS_US : tab==="momentum" ? COLS_MOMENTUM
   : tab==="breakout_watchlist" ? COLS_BREAKOUT
   : tab==="fresh_breakout" ? COLS_FRESH : COLS;
@@ -635,6 +749,7 @@ fetch("./data/latest.json")
     $("cnt-breakout-watchlist").textContent = DATA.breakout_watchlist.length;
     $("cnt-fresh-breakout").textContent = DATA.fresh_breakout.length;
     $("cnt-themes").textContent = (d.themes||[]).length;
+    renderSectorBreadth();
     render();
   })
   .catch(()=>{
