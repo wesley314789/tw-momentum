@@ -182,13 +182,12 @@ tbody tr:hover{background:var(--surface)}
     <div class="meta" id="meta">載入中…</div>
   </div>
   <div class="tabs" role="tablist">
-    <button class="tab active" role="tab" data-tab="sepa">SEPA Trend Template<span class="count" id="cnt-sepa"></span></button>
-    <button class="tab" role="tab" data-tab="daily">當日強勢<span class="count" id="cnt-daily"></span></button>
+    <button class="tab active" role="tab" data-tab="daily">當日強勢<span class="count" id="cnt-daily"></span></button>
     <button class="tab" role="tab" data-tab="momentum">動能篩選<span class="count" id="cnt-momentum"></span></button>
-    <button class="tab" role="tab" data-tab="breakout_watchlist">🚀 Breakout Watchlist<span class="count" id="cnt-breakout-watchlist"></span></button>
-    <button class="tab" role="tab" data-tab="fresh_breakout">🔥 Fresh Breakout<span class="count" id="cnt-fresh-breakout"></span></button>
     <button class="tab" role="tab" data-tab="themes">族群題材<span class="count" id="cnt-themes"></span></button>
     <button class="tab" role="tab" data-tab="breadth">市場廣度</button>
+    <button class="tab" role="tab" data-tab="breakout_watchlist">🚀 Breakout Watchlist<span class="count" id="cnt-breakout-watchlist"></span></button>
+    <button class="tab" role="tab" data-tab="fresh_breakout">🔥 Fresh Breakout<span class="count" id="cnt-fresh-breakout"></span></button>
     <button class="tab" role="tab" data-tab="us">美股動能<span class="count" id="cnt-us"></span></button>
     <button class="tab" role="tab" data-tab="usthemes">美股題材<span class="count" id="cnt-usthemes"></span></button>
     <button class="tab" role="tab" data-tab="usbreadth">美股廣度</button>
@@ -226,12 +225,6 @@ tbody tr:hover{background:var(--surface)}
     <option value="">全部市場</option>
     <option value="上市">上市</option>
     <option value="上櫃">上櫃</option>
-  </select>
-  <select id="rsmin" aria-label="RS 門檻">
-    <option value="0">RS 不限</option>
-    <option value="70">RS ≥ 70</option>
-    <option value="80">RS ≥ 80</option>
-    <option value="90" selected>RS ≥ 90</option>
   </select>
 </div>
 
@@ -310,9 +303,9 @@ const COLS_US = [
   {k:"days",   label:"上榜", num:true},
 ];
 
-let DATA = {sepa:[], daily:[], momentum:[], breakout_watchlist:[], fresh_breakout:[], breadth:[], us:[], usbreadth:[]};
-let tab = "sepa";
-let sortKey = "rs", sortDir = -1;
+let DATA = {daily:[], momentum:[], breakout_watchlist:[], fresh_breakout:[], breadth:[], us:[], usbreadth:[]};
+let tab = "daily";
+let sortKey = "chg_pct", sortDir = -1;
 
 const $ = id => document.getElementById(id);
 const cols = () => tab==="us" ? COLS_US : tab==="momentum" ? COLS_MOMENTUM
@@ -355,12 +348,10 @@ function renderHead(){
 function rows(){
   const q = $("q").value.trim().toLowerCase();
   const mkt = $("mkt").value;
-  const rsmin = tab==="sepa" ? +$("rsmin").value : 0;
   let r = (DATA[tab]||[]).filter(x=>{
     const id = x.code || x.symbol || "";
     return (!q || id.toLowerCase().includes(q) || (x.name||"").toLowerCase().includes(q)) &&
-      (isUS() || !mkt || x.market===mkt) &&
-      (x.rs==null ? rsmin===0 : x.rs>=rsmin);
+      (isUS() || !mkt || x.market===mkt);
   });
   if((tab==="breakout_watchlist" || tab==="fresh_breakout") && sortKey==="breakout_default")
     return r; // 後端已依指定的三層順序排好
@@ -617,7 +608,6 @@ document.querySelectorAll(".tab").forEach(b=>{
     document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active"));
     b.classList.add("active");
     tab = b.dataset.tab;
-    $("rsmin").disabled = tab!=="sepa";
     $("mkt").disabled = isUS();
     // 廣度看的是整個市場的統計,個股搜尋/市場別在那一頁沒有意義
     document.querySelector(".controls").hidden = tab==="breadth" || tab==="usbreadth"
@@ -630,7 +620,7 @@ document.querySelectorAll(".tab").forEach(b=>{
     render();
   };
 });
-["q","mkt","rsmin"].forEach(id=>$(id).addEventListener("input",render));
+["q","mkt"].forEach(id=>$(id).addEventListener("input",render));
 
 fetch("./data/latest.json")
   .then(r=>{ if(!r.ok) throw new Error(r.status); return r.json(); })
@@ -638,7 +628,6 @@ fetch("./data/latest.json")
     // 合併而非覆蓋 —— 美股是另一支 fetch, 誰先回來不一定, 直接指派會把對方洗掉
     DATA = {...DATA, ...d};
     $("meta").textContent = `${d.trade_date} 收盤 · 全市場 ${d.universe} 檔 · 更新 ${d.updated}`;
-    $("cnt-sepa").textContent = d.sepa.length;
     $("cnt-daily").textContent = d.daily.length;
     $("cnt-momentum").textContent = (d.momentum||[]).length;
     DATA.breakout_watchlist = d.breakout_watchlist || [];
