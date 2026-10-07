@@ -222,6 +222,7 @@ tbody tr:hover{background:var(--surface)}
     <button class="tab" role="tab" data-tab="momentum">動能篩選<span class="count" id="cnt-momentum"></span></button>
     <button class="tab" role="tab" data-tab="themes">族群題材<span class="count" id="cnt-themes"></span></button>
     <button class="tab" role="tab" data-tab="breadth">市場廣度</button>
+    <button class="tab" role="tab" data-tab="sector">產業動能</button>
     <button class="tab" role="tab" data-tab="breakout_watchlist">🚀 Breakout Watchlist<span class="count" id="cnt-breakout-watchlist"></span></button>
     <button class="tab" role="tab" data-tab="fresh_breakout">🔥 Fresh Breakout<span class="count" id="cnt-fresh-breakout"></span></button>
     <button class="tab" role="tab" data-tab="us">美股動能<span class="count" id="cnt-us"></span></button>
@@ -375,7 +376,7 @@ function renderSectorBreadth(){
   const official = $("sector-scope").value === "official" && !!DATA.industry_breadth;
   const payload = official ? DATA.industry_breadth : DATA.sector_breadth;
   const all = (payload?.sectors || []).filter(x=>!x.small_sample);
-  $("sector-panel").hidden = !payload;
+  $("sector-panel").hidden = tab!=="sector" || !payload;
   if(!payload) return;
   const coverage = official ? "交易所官方產業分類" : "已核對細分題材標籤";
   $("sector-note").textContent = `${payload.date || "—"} 收盤 · 具${coverage}且行情足夠：${payload.valid_stocks ?? 0} / ${payload.universe_stocks ?? "—"} 檔；`
@@ -493,11 +494,20 @@ function rows(){
 function render(){
   const isBreadth = tab==="breadth" || tab==="usbreadth";
   const isThemes = tab==="themes" || tab==="usthemes";
+  const isSector = tab==="sector";
   $("breadth-panel").hidden = !isBreadth;
   $("themes-panel").hidden = !isThemes;
-  $("stock-table").hidden = isBreadth || isThemes;
+  $("sector-panel").hidden = !isSector;
+  $("stock-table").hidden = isBreadth || isThemes || isSector;
   if(isBreadth){ $("empty").hidden = true; renderBreadth(); return; }
   if(isThemes){ $("empty").hidden = true; renderThemes(); return; }
+  if(isSector){
+    const hasSectorData = !!(DATA.industry_breadth || DATA.sector_breadth);
+    $("empty").hidden = hasSectorData;
+    if(!hasSectorData) $("empty").textContent = "尚無產業動能資料";
+    renderSectorBreadth();
+    return;
+  }
 
   renderHead();
   const r = rows();
@@ -738,7 +748,7 @@ document.querySelectorAll(".tab").forEach(b=>{
     $("mkt").disabled = isUS();
     // 廣度看的是整個市場的統計,個股搜尋/市場別在那一頁沒有意義
     document.querySelector(".controls").hidden = tab==="breadth" || tab==="usbreadth"
-      || tab==="themes" || tab==="usthemes";
+      || tab==="themes" || tab==="usthemes" || tab==="sector";
     if(tab==="daily") sortKey="chg_pct";
     else if(tab==="breakout_watchlist" || tab==="fresh_breakout") sortKey="breakout_default";
     else if(tab==="momentum" || tab==="us") sortKey="excess_1m";   // 入選條件就是超額, 預設照它排

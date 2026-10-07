@@ -104,11 +104,13 @@ def membership(hist: pd.DataFrame, shares: pd.DataFrame, dates: list) -> dict:
     名單, 所以存起來重複用。快取涵蓋不到要求的區間時才重算。
     """
     out = {}
+    cache_all = {}
     if MEM_CACHE.exists():
         c = pd.read_csv(MEM_CACHE, dtype={"date": str, "code": str})
-        g = c[c["date"].isin(dates)].groupby("date")["code"].apply(
+        g = c.groupby("date")["code"].apply(
             lambda s: {x for x in s.dropna() if x})
-        out = {d: g[d] for d in g.index}
+        cache_all = {d: g[d] for d in g.index}
+        out = {d: cache_all[d] for d in dates if d in cache_all}
         if out:
             print(f"  用名單快取 ({len(out)}/{len(dates)} 天)", flush=True)
     missing = [d for d in dates if d not in out]
@@ -119,7 +121,9 @@ def membership(hist: pd.DataFrame, shares: pd.DataFrame, dates: list) -> dict:
             print(f"  篩選 {i}/{len(missing)} ({d}: {len(out[d])} 檔)", flush=True)
     # Keep an empty marker for zero-pick days; otherwise every rerun
     # needlessly recalculates those dates.
-    rows = [{"date": d, "code": c} for d, cs in out.items()
+    # 只要求 2026 年時不能把已算好的 2024/2025 年從快取刪掉。
+    cache_all.update(out)
+    rows = [{"date": d, "code": c} for d, cs in cache_all.items()
             for c in (cs if cs else {""})]
     pd.DataFrame(rows).to_csv(MEM_CACHE, index=False, compression="gzip")
     return out
@@ -187,7 +191,8 @@ def build_px(hist: pd.DataFrame, atr_period: int | None = None) -> dict:
 
 def run(px: dict, members: dict, dates: list,
         rate=None, minimum=None, with_fees: bool = True,
-        initial_prev: set | None = None, atr_multiple: float | None = None) -> pd.DataFrame:
+        initial_prev: set | None = None, atr_multiple: float | None = None,
+        entry_signals: dict[str, set[str]] | None = None) -> pd.DataFrame:
     if atr_multiple is not None and (not np.isfinite(atr_multiple) or atr_multiple <= 0):
         raise ValueError("ATR multiple must be positive and finite")
     trades, open_pos = [], {}
@@ -229,7 +234,10 @@ def run(px: dict, members: dict, dates: list,
         if i + 1 >= len(dates):
             continue
         prev = members.get(dates[i - 1], set()) if i else (initial_prev or set())
-        new = members.get(d, set()) - prev
+        # 研究附加濾網時，訊號仍須是「原動能名單今天新上榜」。若先過濾整份
+        # members 再做差，產業隔天升進前五就會把舊上榜股票誤當新訊號。
+        new = (entry_signals.get(d, set()) if entry_signals is not None
+               else members.get(d, set()) - prev)
         nxt = dates[i + 1]
         for code in sorted(new):
             if code in open_pos or code not in px:
