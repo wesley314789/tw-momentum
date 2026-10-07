@@ -38,13 +38,19 @@ def check_snapshot(data: dict, state: dict, today: dt.date) -> dict:
                 "trade_date": trade_date.isoformat()}
     picks = data.get("momentum")
     breadth = data.get("breadth")
-    if (not isinstance(picks, list) or not isinstance(breadth, list) or not breadth
+    if (not isinstance(picks, list) or not isinstance(breadth, list) or len(breadth) < 2
             or data.get("member_days", 0) < 2
+            or not isinstance(breadth[-2].get("count"), int)
+            or breadth[-2]["count"] < 0
+            or not isinstance(breadth[-2].get("date"), str)
+            or breadth[-2]["date"] >= trade_date.isoformat()
             or breadth[-1].get("date") != trade_date.isoformat()
             or breadth[-1].get("count") != len(picks)
             or any(not isinstance(p, dict) or not isinstance(p.get("days"), int)
                    or p["days"] < 1 for p in picks)):
         return {"status": "error", "reason": "動能名單與市場廣度不一致或缺少上榜天數"}
+    if breadth[-2]["count"] + sum(p["days"] == 1 for p in picks) < len(picks):
+        return {"status": "error", "reason": "新上榜數與前日市場廣度不一致"}
     if state.get("last_sent_trade_date") == trade_date.isoformat():
         return {"status": "quiet", "reason": "這個交易日已發送過",
                 "trade_date": trade_date.isoformat()}
@@ -58,10 +64,17 @@ def format_messages(data: dict, *, demo: bool = False) -> list[str]:
                    key=lambda p: (-float(p.get("value") or 0),
                                   -float(p.get("excess_1m") or 0), str(p.get("code", ""))))
     breadth = data["breadth"][-1]
+    previous_count = data["breadth"][-2]["count"]
+    current_count = len(data["momentum"])
+    net_change = current_count - previous_count
+    exited_count = previous_count + len(picks) - current_count
+    if exited_count < 0:
+        raise ValueError("新上榜數與前日市場廣度不一致")
     title = "🧪 動能新上榜測試" if demo else "📈 動能新上榜"
     base = (f"{title}｜{data['trade_date']} 收盤\n"
-            f"新增 {len(picks)} 檔｜動能榜 {len(data['momentum'])} 檔"
-            f"｜市場廣度 {float(breadth['pct']):.2f}%\n"
+            f"動能榜 {previous_count} → {current_count} 檔（{net_change:+d}）\n"
+            f"新上榜 {len(picks)} 檔｜下榜 {exited_count} 檔\n"
+            f"市場廣度 {float(breadth['pct']):.2f}%\n"
             "依成交值由高到低")
     if demo:
         base += "\n這是測試訊息，不影響正式早報。"

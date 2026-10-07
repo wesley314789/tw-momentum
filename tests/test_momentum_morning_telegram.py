@@ -16,7 +16,8 @@ import momentum_morning_telegram as alert
 
 sample = {
     "trade_date": "2026-10-02", "member_days": 250,
-    "breadth": [{"date": "2026-10-02", "count": 2, "pct": 5.0}],
+    "breadth": [{"date": "2026-10-01", "count": 3, "pct": 6.0},
+                {"date": "2026-10-02", "count": 2, "pct": 5.0}],
     "momentum": [
         {"code": "1111", "name": "Low", "days": 1, "value": 1.2,
          "theme": "Theme A", "excess_1m": 12.3},
@@ -33,12 +34,14 @@ assert alert.check_snapshot(sample, {}, date(2026, 10, 2))["status"] == "skip"
 assert alert.check_snapshot(sample, {}, date(2026, 10, 7))["status"] == "skip"
 assert alert.check_snapshot(sample, {"last_sent_trade_date": "2026-10-02"},
                             date(2026, 10, 5))["status"] == "quiet"
-assert alert.check_snapshot(dict(sample, breadth=[{"date": "2026-10-02", "count": 1}]),
+assert alert.check_snapshot(dict(sample, breadth=[{"date": "2026-10-01", "count": 3},
+                                                   {"date": "2026-10-02", "count": 1}]),
                             {}, date(2026, 10, 5))["status"] == "error"
 
 message = alert.format_messages(sample)[0]
 assert message.index("2222 High") < message.index("1111 Low")
-assert "新增 2 檔" in message and "未歸類" in message
+assert "動能榜 3 → 2 檔（-1）" in message
+assert "新上榜 2 檔｜下榜 3 檔" in message and "未歸類" in message
 assert "2026-10-02 收盤" in message
 assert len(message) < alert.MAX_MESSAGE_CHARS
 demo_message = alert.format_messages(sample, demo=True)[0]
@@ -51,7 +54,8 @@ many = dict(sample,
             momentum=[dict(sample["momentum"][0], code=str(i).zfill(4),
                            name="Long Company Name " * 3)
                       for i in range(220)])
-many["breadth"] = [{"date": "2026-10-02", "count": 220, "pct": 10.0}]
+many["breadth"] = [{"date": "2026-10-01", "count": 2, "pct": 5.0},
+                   {"date": "2026-10-02", "count": 220, "pct": 10.0}]
 parts = alert.format_messages(many)
 assert len(parts) > 1 and all(len(part) <= alert.MAX_MESSAGE_CHARS for part in parts)
 assert sum(part.count("Long Company Name") for part in parts) == 220 * 3
