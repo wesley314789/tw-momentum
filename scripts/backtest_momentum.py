@@ -368,7 +368,7 @@ def main():
     MEM_CACHE = ROOT / "data" / f"_bt_members_{u.SCREEN_SIG}_ca1_{digest}.csv.gz"
     shares = u.load_shares()
     all_dates = sorted(hist["date"].unique())
-    usable = all_dates[199:]          # 前 200 個交易日拿來算 SMA200
+    usable = all_dates[max(200, u.BR_HIGH52_DAYS)-1:]
     dates = [d for d in usable if d >= args.start and (not args.end or d <= args.end)]
     if not dates:
         print(f"沒有可回測的交易日。歷史 {all_dates[0]} ~ {all_dates[-1]}, "

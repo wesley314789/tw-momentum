@@ -48,7 +48,8 @@ def main():
     b.MEM_CACHE = b.ROOT / "data" / f"_bt_members_{b.u.SCREEN_SIG}_ca1_{digest}.csv.gz"
     shares = b.u.load_shares()
     all_dates = sorted(hist.date.unique())
-    dates = [d for d in all_dates[199:] if d >= args.start and (not args.end or d <= args.end)]
+    dates = [d for d in all_dates[max(200, b.u.BR_HIGH52_DAYS)-1:]
+             if d >= args.start and (not args.end or d <= args.end)]
     if len(dates) < 2:
         ap.error("Need at least two eligible trading days")
     members = b.membership(hist, shares, dates)

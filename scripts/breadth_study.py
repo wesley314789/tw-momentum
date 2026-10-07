@@ -143,7 +143,7 @@ def main():
     shares = u.load_shares()
 
     all_dates = sorted(hist["date"].unique())
-    dates = all_dates[199:]                      # 前 200 天拿來算 SMA200
+    dates = all_dates[max(200, u.BR_HIGH52_DAYS)-1:]
     if args.start:
         dates = [d for d in dates if d >= args.start]
     print(f"可用 {len(dates)} 個交易日 {dates[0]} ~ {dates[-1]}", flush=True)

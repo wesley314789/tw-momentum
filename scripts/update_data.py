@@ -44,7 +44,8 @@ DAILY_VOL_RATIO = 1.5   # 當日強勢: 量比下限
 
 # 動能篩選(市場廣度用):
 #   價格 > SMA200、SMA10 > SMA20、總市值 > 20 億、成交值 > 5000 萬、
-#   一個月漲幅 - 大盤一個月漲幅 > 10 個百分點
+#   一個月漲幅 - 大盤一個月漲幅 > 10 個百分點、
+#   收盤價距近 252 個交易日最高收盤價不超過 25%
 # 最後一條原本是 TradingView 那組的「一個月漲幅 > 20%」。絕對門檻的問題是它
 # 跟著大盤走:大盤一個月漲 15% 時, 只多漲 5% 的股票就能過; 大盤跌 10% 時,
 # 逆勢漲 15% 的股票反而過不了。2026-09-18 改成相對大盤, 選出的是「跑贏市場」
@@ -52,13 +53,16 @@ DAILY_VOL_RATIO = 1.5   # 當日強勢: 量比下限
 BR_MCAP = 2e9      # 總市值下限(元)
 BR_TURNOVER = 5e7  # 成交值下限(元)
 BR_EXCESS = 10.0   # 一個月超額報酬下限(百分點, 個股漲幅 - 加權指數漲幅)
+BR_HIGH52_DAYS = 252
+BR_MIN_HIGH52_RATIO = 0.75  # 現價至少是近 52 週最高收盤價的 75%
 BR_PERF_DAYS = 20  # 「一個月」取 20 個交易日(四週)。原本是 21(= 252/12,
                    # 跟 RS 的 63/126/189/252 同一套換算), 2026-09-18 依使用者偏好
                    # 改成 20。兩者都只是近似 —— TradingView 的「1 個月」是日曆月,
                    # 實際落在 20~23 個交易日之間
 # 篩選條件的指紋。回測/研究腳本的名單快取檔名帶著它 —— 條件一改, 快取自然
 # 失效, 不會悄悄拿舊定義的名單去算新問題。
-SCREEN_SIG = f"x{BR_EXCESS:g}_mc{BR_MCAP:.0e}_tv{BR_TURNOVER:.0e}_d{BR_PERF_DAYS}"
+SCREEN_SIG = (f"x{BR_EXCESS:g}_mc{BR_MCAP:.0e}_tv{BR_TURNOVER:.0e}"
+              f"_d{BR_PERF_DAYS}_h{BR_HIGH52_DAYS}_{BR_MIN_HIGH52_RATIO:g}")
 
 HEADERS = {"User-Agent": "Mozilla/5.0 (tw-momentum-scanner)"}
 
@@ -349,7 +353,8 @@ def momentum_screen(hist: pd.DataFrame, shares: pd.DataFrame,
     動能篩選,回傳通過的個股。
 
         價格 > SMA200、SMA10 > SMA20、總市值 > BR_MCAP、成交值 > BR_TURNOVER、
-        BR_PERF_DAYS 個交易日漲幅 - 同期間加權指數漲幅 > BR_EXCESS 個百分點
+        BR_PERF_DAYS 個交易日漲幅 - 同期間加權指數漲幅 > BR_EXCESS 個百分點、
+        收盤價 >= 近 BR_HIGH52_DAYS 個交易日最高收盤價 * BR_MIN_HIGH52_RATIO
 
     大盤漲幅用**這檔股票自己的視窗**算(它 BR_PERF_DAYS 根 K 棒前的那一天到今天),
     不是固定的「全市場 BR_PERF_DAYS 個交易日前」—— 中間停牌過的個股, 兩者的起點
@@ -358,12 +363,12 @@ def momentum_screen(hist: pd.DataFrame, shares: pd.DataFrame,
     idx 是加權指數收盤(date, close)。沒給就讀 data/index.csv.gz, 但那份只有
     280 天; 回測更早的區間要自己傳涵蓋得到的序列進來。
 
-    需要 200 天以上的歷史才算得出 SMA200, 所以歷史視窗前 200 天無法回補。
+    需要滿 252 個交易日的歷史才算得出 52 週最高收盤價。
     """
     if as_of:
         hist = hist[hist["date"] <= as_of]
     dates = sorted(hist["date"].unique())
-    if len(dates) < 200:
+    if len(dates) < max(200, BR_HIGH52_DAYS):
         return pd.DataFrame()
     today = dates[-1]
 
@@ -382,12 +387,12 @@ def momentum_screen(hist: pd.DataFrame, shares: pd.DataFrame,
         # Backtests can supply a total-return approximation for technical
         # signals while keeping raw close for actual price and market cap.
         c = g["signal_close"].to_numpy() if "signal_close" in g else g["close"].to_numpy()
-        if len(c) < 200:
+        if len(c) < max(200, BR_HIGH52_DAYS):
             continue
         # The historical backtest marks unexplained corporate-action jumps.
-        # A contaminated 200-day window makes both SMA and return signals
+        # A contaminated 252-day window makes the 52-week high signal
         # unreliable; the live pipeline has no _corp field and is unchanged.
-        if "_corp" in g and g["_corp"].tail(200).any():
+        if "_corp" in g and g["_corp"].tail(BR_HIGH52_DAYS).any():
             continue
         close = c[-1]
         raw_close = g["close"].iloc[-1]
@@ -405,6 +410,7 @@ def momentum_screen(hist: pd.DataFrame, shares: pd.DataFrame,
         excess = perf - ix_perf
         if not (close > c[-200:].mean()
                 and c[-10:].mean() > c[-20:].mean()
+                and close >= c[-BR_HIGH52_DAYS:].max() * BR_MIN_HIGH52_RATIO
                 and raw_close * n > BR_MCAP
                 and turnover > BR_TURNOVER
                 and excess > BR_EXCESS):
@@ -450,7 +456,7 @@ def update_breadth(hist: pd.DataFrame, shares: pd.DataFrame,
         idx = load_index_history()     # 讀一次就好, 不要每天在迴圈裡重讀
     have = set(br["date"])
     dates = sorted(hist["date"].unique())
-    todo = dates[199:] if backfill else dates[-1:]   # 前 200 天算不出 SMA200
+    todo = dates[max(200, BR_HIGH52_DAYS)-1:] if backfill else dates[-1:]
     todo = [d for d in todo if backfill or d not in have]
 
     rows = br.to_dict("records")
@@ -903,7 +909,9 @@ def rebuild_breadth():
 
     shares = load_shares()
     dates = sorted(hist["date"].unique())
-    usable = list(range(199, len(dates)))
+    usable = list(range(max(200, BR_HIGH52_DAYS)-1, len(dates)))
+    if not usable:
+        raise ValueError(f"歷史不足 {max(200, BR_HIGH52_DAYS)} 個交易日, 無法重算市場廣度")
     print(f"重算 {len(usable)} 天 {dates[usable[0]]} ~ {dates[-1]} | 條件 {SCREEN_SIG}", flush=True)
 
     by_date = {d: g for d, g in hist.groupby("date")}

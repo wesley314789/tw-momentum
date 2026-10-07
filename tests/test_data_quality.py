@@ -45,14 +45,22 @@ selected = us.screen(arrs, universe, dates[-1], bench)
 assert selected.symbol.tolist() == ["AAA"]
 assert us.count_universe(arrs, dates[-1], {"AAA"}) == 1
 tw_dates = [(dt.date(2025, 1, 1) + dt.timedelta(days=i)).isoformat()
-            for i in range(201)]
-tw_hist = pd.DataFrame({"date": tw_dates, "code": ["1111"] * 201,
-                        "name": ["Test"] * 201, "market": ["上市"] * 201,
-                        "close": close, "signal_close": close * .5,
-                        "value": [1e8] * 201, "_corp": [False] * 201})
+            for i in range(tw.BR_HIGH52_DAYS)]
+tw_close = np.geomspace(10., 100., tw.BR_HIGH52_DAYS)
+tw_hist = pd.DataFrame({"date": tw_dates, "code": ["1111"] * len(tw_dates),
+                        "name": ["Test"] * len(tw_dates), "market": ["上市"] * len(tw_dates),
+                        "close": tw_close, "signal_close": tw_close * .5,
+                        "value": [1e8] * len(tw_dates), "_corp": [False] * len(tw_dates)})
 shares = pd.DataFrame({"code": ["1111"], "shares": [2.5e7]})
-idx = pd.DataFrame({"date": tw_dates, "close": [100.] * 201})
+idx = pd.DataFrame({"date": tw_dates, "close": [100.] * len(tw_dates)})
 assert tw.momentum_screen(tw_hist, shares, idx=idx).code.tolist() == ["1111"]
+assert tw.momentum_screen(tw_hist.iloc[:-1], shares, idx=idx).empty  # 未滿 52 週
+below_high = tw_hist.copy()
+below_high.loc[below_high.index[-60], "signal_close"] = tw_close[-1] * .5 / .74
+assert tw.momentum_screen(below_high, shares, idx=idx).empty  # 距高點 26%
+at_limit = tw_hist.copy()
+at_limit.loc[at_limit.index[-60], "signal_close"] = tw_close[-1] * .5 / .75
+assert tw.momentum_screen(at_limit, shares, idx=idx).code.tolist() == ["1111"]
 with tempfile.TemporaryDirectory() as tmp:
     us.SNAPSHOT_DIR = Path(tmp) / "snapshots"
     us.BREADTH_PATH = Path(tmp) / "breadth.csv"

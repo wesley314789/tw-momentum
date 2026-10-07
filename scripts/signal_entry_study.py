@@ -155,7 +155,8 @@ def study(args, bench):
     digest = hashlib.sha256(b.ca.PATH.read_bytes()).hexdigest()[:10]
     b.MEM_CACHE = b.ROOT / "data" / f"_bt_members_{b.u.SCREEN_SIG}_ca1_{digest}.csv.gz"
     all_dates = sorted(hist.date.unique())
-    dates = [d for d in all_dates[199:] if args.start <= d <= args.end]
+    dates = [d for d in all_dates[max(200, b.u.BR_HIGH52_DAYS)-1:]
+             if args.start <= d <= args.end]
     if len(dates) <= 20:
         raise ValueError("Need more than 20 eligible trading days")
     bench = bench.set_index("date")
