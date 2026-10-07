@@ -1,4 +1,4 @@
-"""以已核對的台股題材對照表，計算盤後產業動能；不改原 Pivot scanner。"""
+"""用現有日線與 Pivot 計算盤後產業動能；可傳入官方產業或已核對題材對照。"""
 
 from collections import defaultdict
 

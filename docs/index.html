@@ -171,8 +171,9 @@ tbody tr:hover{background:var(--surface)}
   background:var(--surface);padding:16px}
 .sector-top{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:5px}
 .sector-top h2{font-size:16px}
-.sector-top select{margin-left:auto;background:var(--surface-2);color:var(--text);
+.sector-top select{background:var(--surface-2);color:var(--text);
   border:1px solid var(--line);border-radius:6px;padding:6px 10px;font:inherit}
+#sector-scope{margin-left:auto}
 .sector-note{color:var(--muted);font-size:11px;margin-bottom:12px}
 .sector-item{border-top:1px solid var(--line)}
 .sector-item summary{list-style:none;cursor:pointer;padding:10px 2px}
@@ -267,6 +268,10 @@ tbody tr:hover{background:var(--surface)}
   <section class="sector-card" id="sector-panel" hidden>
     <div class="sector-top">
       <h2>產業動能 / Sector Breadth</h2>
+      <select id="sector-scope" aria-label="產業動能分類來源">
+        <option value="official">官方產業（全市場）</option>
+        <option value="themes">細分題材（已核對）</option>
+      </select>
       <select id="sector-sort" aria-label="產業動能排序">
         <option value="delta_1d_pp">Δ1D</option>
         <option value="strong_pct">Strong %</option>
@@ -367,14 +372,17 @@ const sectorStatus = {
 };
 
 function renderSectorBreadth(){
-  const payload = DATA.sector_breadth;
+  const official = $("sector-scope").value === "official" && !!DATA.industry_breadth;
+  const payload = official ? DATA.industry_breadth : DATA.sector_breadth;
   const all = (payload?.sectors || []).filter(x=>!x.small_sample);
   $("sector-panel").hidden = !payload;
   if(!payload) return;
-  $("sector-note").textContent = `${payload.date || "—"} 收盤 · 僅統計已核對題材標籤且行情足夠的 ${payload.valid_stocks ?? 0} / ${payload.universe_stocks ?? "—"} 檔；`
-    + `每組至少 3 檔，並非全市場產業覆蓋。Δ1D 為相對前一交易日的百分點。`;
+  const coverage = official ? "交易所官方產業分類" : "已核對細分題材標籤";
+  $("sector-note").textContent = `${payload.date || "—"} 收盤 · 具${coverage}且行情足夠：${payload.valid_stocks ?? 0} / ${payload.universe_stocks ?? "—"} 檔；`
+    + `每組至少 3 檔。Δ1D 為相對前一交易日的百分點。`
+    + (official ? "分類依公司所屬產業，不能當作 PCB、CCL 等供應鏈題材。" : "題材仍只有已核對個股，不代表全市場覆蓋。");
   if(!all.length){
-    $("sector-list").textContent = "目前沒有達到 3 檔有效樣本的題材。";
+    $("sector-list").textContent = `目前沒有達到 3 檔有效樣本的${official ? "產業" : "題材"}。`;
     return;
   }
   const key = $("sector-sort").value;
@@ -421,6 +429,11 @@ function renderSectorBreadth(){
     renderSectorBreadth();
   });
 }
+$("sector-scope").addEventListener("change",()=>{
+  sectorOpen.clear();
+  sectorExpanded = false;
+  renderSectorBreadth();
+});
 $("sector-sort").addEventListener("change",renderSectorBreadth);
 const cols = () => tab==="us" ? COLS_US : tab==="momentum" ? COLS_MOMENTUM
   : tab==="breakout_watchlist" ? COLS_BREAKOUT

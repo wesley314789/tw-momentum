@@ -210,7 +210,7 @@ def fetch_tpex_date(d: date, with_raw: bool = False):
     return (pd.DataFrame(rows), shares) if with_raw else pd.DataFrame(rows)
 
 
-def fetch_shares() -> pd.DataFrame:
+def fetch_shares(*, with_twse_payload=False):
     """
     發行股數(算總市值用)。上市取證交所公司基本資料 OpenAPI, 上櫃直接在每日行情
     裡就有(欄位「發行股數」)。
@@ -238,7 +238,8 @@ def fetch_shares() -> pd.DataFrame:
     rows.extend(tpex_raw)
 
     df = pd.DataFrame(rows).drop_duplicates(subset=["code"], keep="first")
-    return df[df["shares"] > 0]
+    df = df[df["shares"] > 0]
+    return (df, payload) if with_twse_payload else df
 
 
 def load_shares() -> pd.DataFrame:
@@ -802,8 +803,9 @@ def enrich_and_write(merged: pd.DataFrame, idx_hist: pd.DataFrame | None = None)
     result = compute(merged, idx_hist)
 
     # 動能篩選 + 市場廣度。發行股數每天更新一次(公司會增減資)。
+    twse_companies = None
     try:
-        shares = fetch_shares()
+        shares, twse_companies = fetch_shares(with_twse_payload=True)
         save_shares(shares)
     except Exception as e:
         print(f"發行股數抓取失敗({e.__class__.__name__}),沿用既有的。")
@@ -837,7 +839,27 @@ def enrich_and_write(merged: pd.DataFrame, idx_hist: pd.DataFrame | None = None)
         print(f"題材判斷失敗({e.__class__.__name__}),略過。")
         result["themes"] = []
 
-    # 產業動能沿用同一份日線、加權指數及已核對題材對照表；
+    # 官方產業對照沿用 fetch_shares 已取得的證交所公司資料，只多抓一份
+    # 櫃買公司基本資料。若任何一市不完整，維持上次兩市皆成功的快照。
+    try:
+        try:
+            import industry_mapping
+        except ModuleNotFoundError:
+            from scripts import industry_mapping
+        if twse_companies is None:
+            twse_companies = _get_with_retry(industry_mapping.TWSE_URL, timeout=40).json()
+        otc_companies = _get_with_retry(industry_mapping.TPEX_URL, timeout=40).json()
+        official_sectors = industry_mapping.build(twse_companies, otc_companies)
+        industry_mapping.save(official_sectors)
+    except Exception as e:
+        print(f"官方產業對照更新失敗({e.__class__.__name__}): {e}; 沿用舊快照。")
+    try:
+        official_sector_map = industry_mapping.load()
+    except Exception as e:
+        print(f"官方產業對照讀取失敗({e.__class__.__name__}): {e}")
+        official_sector_map = {}
+
+    # 兩種產業排行共用同一份日線、加權指數及 Strong/Pivot 計算；
     # 與原 Breakout scanner 各自輸出，避免修改原本嚴格的候選條件。
     try:
         try:
@@ -845,11 +867,17 @@ def enrich_and_write(merged: pd.DataFrame, idx_hist: pd.DataFrame | None = None)
         except ModuleNotFoundError:
             from scripts import sector_breadth
         sector_map = themes.load_overrides() if themes else {}
-        result["sector_breadth"] = sector_breadth.calculate(
-            merged, sector_map, index_lookup(idx))
+        index_at = index_lookup(idx)
+        result["sector_breadth"] = sector_breadth.calculate(merged, sector_map, index_at)
     except Exception as e:
-        print(f"產業動能計算失敗({e.__class__.__name__}): {e}")
+        print(f"細分題材動能計算失敗({e.__class__.__name__}): {e}")
         result["sector_breadth"] = {"date": result["trade_date"], "sectors": []}
+    try:
+        result["industry_breadth"] = sector_breadth.calculate(
+            merged, official_sector_map, index_lookup(idx))
+    except Exception as e:
+        print(f"官方產業動能計算失敗({e.__class__.__name__}): {e}")
+        result["industry_breadth"] = {"date": result["trade_date"], "sectors": []}
 
     # 上榜天數。用有紀錄的交易日序列, 不是日曆天 —— 隔週末不算中斷。
     mem_dates = sorted(members["date"].unique())

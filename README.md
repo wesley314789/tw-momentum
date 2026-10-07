@@ -61,7 +61,7 @@ docs/data/us_latest.json    美股篩選結果與廣度序列(自動產生)
 
 **產業動能 / Sector Breadth（盤後版）：** `scripts/sector_breadth.py` 讀同一份個股與加權指數日線，用 `scripts/breakout.py` 的「排除當日」60D Pivot 及前 20 日均量。每檔股票依收盤高於 MA20、收盤高於 MA50、MA20 高於 MA50、20 日超額報酬至少 5 個百分點、距 Pivot −5%～+3%、今日符合 Fresh Breakout 六項各加 1 分，至少 4 分算 Strong。各組顯示 Strong／靠近 Pivot（−5%～+1%）／Fresh Breakout 佔有效樣本比例；Δ1D 為今日 Strong % 減前一交易日 Strong %，單位是百分點。點開可看個股與轉強／轉弱。
 
-第一版的組別沿用 `data/theme_overrides.csv` **已核對的題材標籤**，不是完整交易所產業分類；未分類、明確標 `-`、行情不足 61 根或指數資料不足的股票不進分母，少於 3 檔的組別不顯示。因此這個排行只能比較目前已分類樣本的擴散，不能解讀為全市場的產業廣度。原 Breakout Watchlist／Fresh Breakout 的嚴格趨勢、量縮及 ATR 條件維持原樣。`python -m unittest tests.test_sector_breadth` 驗證分母、兩組手算、時間邊界與缺值。
+排行可切換「官方產業（全市場）」與「細分題材（已核對）」。前者每天讀證交所的上市公司基本資料與櫃買中心的上櫃公司基本資料，將官方產業代碼存入 `data/sector_mapping.csv`；任一來源失敗就沿用上次完整快照，避免半市場混入。它是公司所屬產業，不能視為 PCB、CCL 等供應鏈題材。後者沿用 `data/theme_overrides.csv` **已核對的題材標籤**，覆蓋較少。兩者都只計入行情至少 61 根且指數資料足夠的個股；官方未提供標準產業的 TDR、未分類、明確標 `-` 的題材不進對應分母，少於 3 檔的組別不顯示。分類用目前的官方快照計算今日及昨日，產業異動當天可能影響 Δ1D。原 Breakout Watchlist／Fresh Breakout 的嚴格趨勢、量縮及 ATR 條件維持原樣。`python -m unittest tests.test_sector_breadth tests.test_industry_mapping` 驗證分母、兩組手算、時間邊界、官方欄位與缺值。
 
 **SEPA(七條件全過 + RS ≥ 70):**
 1. 收盤 > 150MA 且 > 200MA
