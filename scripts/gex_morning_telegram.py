@@ -41,6 +41,11 @@ def check_snapshot(data, state, today):
         return {"status": "error", "reason": "OI 日期無效"}
     if oi_day >= today:
         return {"status": "error", "reason": "盤前快照的 OI 日期不合理"}
+    # 期交所的「交易日期」不等於夜盤實際發生日期。週五夜盤會歸到週一，
+    # 連假前夜盤也會歸到下一營業日；這些都不是當天清晨的新行情。
+    if today - oi_day != dt.timedelta(days=1):
+        return {"status": "skip", "reason": "夜盤跨休市日，沒有新的盤前行情",
+                "oi_date": data["date"], "preopen_date": preopen_day}
     if number(data.get("preopen_price")) is None or number(data.get("preopen_gex")) is None:
         return {"status": "error", "reason": "盤前價格或 GEX 缺漏"}
     settlement, forward = number(data.get("txf_settle")), number(data.get("F"))
@@ -89,6 +94,7 @@ def format_message(data, *, demo=False):
         f"送出時間：{delivery}{'' if demo else timing}",
         price_line,
         f"OI / IV：{data['date']} 收盤",
+        *([] if demo else [f"夜盤時段：{data['date']} 15:00～{data['preopen_date']} 05:00"]),
         "以下位階均換算為台指期點位（沿用前一收盤日基差）。",
         "",
         "📍 Gamma Concentration（不假設造市商持倉方向）",

@@ -255,7 +255,7 @@ Concentration Valley 找**Call+Put concentration 的局部低點**,不是區間�
 
 **盤前快照**:排程跑在台北早上 07:00,此時當日夜盤(前日 15:00~當日 05:00)已收、日盤尚未開,期交所已發布夜盤收盤價但還沒有當日 OI。這時先用前一收盤日已知的 `台指期結算價 - 選擇權 F`，把夜盤台指期價格扣回選擇權座標，再重算 `gex_now` / `net_ratio` / `regime`,輸出成 `preopen_*` 欄位。位階仍沿用上一交易日的 OI 與 IV；盤前欄位不寫進歷史檔，因為它是暫時狀態。夜盤基差可能變動，這只是以上次已知價差估算。
 
-**Telegram 早上 GEX 摘要**：`.github/workflows/gex-morning-telegram.yml` 預定台北 07:55 啟動、最早 08:00 發送，08:20 再檢查一次，沿用市場警戒設定的 `TELEGRAM_BOT_TOKEN` 與 `TELEGRAM_CHAT_ID`。只有 `preopen_date` 等於當天且夜盤價格、盤前重算都完整時才發送；休市與舊資料不重複發。訊息將 Gamma Concentration 與依賴造市商方向假設的 Signed GEX 分段，位階用上次已知基差換算成台指期點位。發送成功後才更新 `data/gex_telegram_state.json`。GitHub 排程可能誤點或跳過，若要更接近 08:00，應另外用外部 cron 在 08:00 呼叫此 workflow 的 `workflow_dispatch`；重複觸發會由日期狀態擋住。
+**Telegram 早上 GEX 摘要**：`.github/workflows/gex-morning-telegram.yml` 預定台北 07:55 啟動、最早 08:00 發送，08:20 再檢查一次，沿用市場警戒設定的 `TELEGRAM_BOT_TOKEN` 與 `TELEGRAM_CHAT_ID`。只有 `preopen_date` 等於當天、夜盤價格與盤前重算完整，且前一份 OI 的日期**就是昨天**時才發送。期交所會把週五／連假前開出的夜盤歸到下一營業日；歸屬日期是今天不代表今早有新行情。跨休市日的舊夜盤只在網站標為「上次夜盤」，不建立新盤前 GEX，也不發 TG。訊息將 Gamma Concentration 與依賴造市商方向假設的 Signed GEX 分段，位階用上次已知基差換算成台指期點位。發送成功後才更新 `data/gex_telegram_state.json`。GitHub 排程可能誤點或跳過，若要更接近 08:00，應另外用外部 cron 在 08:00 呼叫此 workflow 的 `workflow_dispatch`；重複觸發會由日期狀態擋住。
 
 **Telegram 早上動能新上榜**：同一個 workflow 另外發送前一交易日新進「動能篩選」的股票（網站上「上榜：新」，即連續上榜天數為 1）。訊息依成交值由高到低列出代號、名稱、題材和對大盤的超額漲幅，檔數太多時分則發送；沒有新股票也會回報 0 檔。資料必須和當日市場廣度一致、已收盤且距當天不超過 4 個日曆日。成功後更新 `data/momentum_telegram_state.json`，補跑只續送未完成的分則；GEX 測試推播不會觸發這則正式股票訊息。股價與題材皆取自前一交易日收盤資料，不是 08:00 的即時行情。
 

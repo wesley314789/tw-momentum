@@ -823,9 +823,11 @@ fetch("./data/gex_latest.json")
     // 盤前(當日夜盤已收、日盤未開):用夜盤價重算過的 regime 才是「現在」
     const hasBasis = Number.isFinite(d.txf_settle) && Number.isFinite(d.F);
     const pre = d.preopen_price != null && hasBasis;
+    const staleNight = Number.isFinite(d.stale_night_price) && d.stale_night_session_start;
     const dayClose = Number.isFinite(d.txf_close) ? d.txf_close : null;
     const nightClose = Number.isFinite(d.preopen_price) ? d.preopen_price :
-                       (Number.isFinite(d.txf_night) ? d.txf_night : null);
+                       (staleNight ? d.stale_night_price :
+                       (Number.isFinite(d.txf_night) ? d.txf_night : null));
     $("gex-price-label").textContent = pre ? "台指期夜盤收盤" : "台指期收盤";
     $("gex-F").textContent = fmtPts(pre ? d.preopen_price : dayClose);
     const regime = pre ? d.preopen_regime : d.regime;
@@ -833,7 +835,7 @@ fetch("./data/gex_latest.json")
 
     const [label, cls] = REGIME[regime] || REGIME.neutral;
     const badge = $("gex-regime-badge");
-    badge.textContent = label;
+    badge.textContent = label + (staleNight ? " · 舊日盤" : "");
     badge.className = "gex-regime " + cls;
     badge.title = ratio==null ? "" :
       `淨/總 gamma = ${(ratio*100).toFixed(1)}%,低於 5% 時正負號不可靠`
@@ -865,8 +867,9 @@ fetch("./data/gex_latest.json")
       .map(t => ({price:txLevel(d[t.k]), label:t.label,
                   sub:levelSub(t, d[t.k]), cls:t.flip?"flip":""}));
     if (nightClose != null)
-      items.push({price:nightClose, label:"台指期夜盤收盤",
-                  sub:d.preopen_price != null ? `${d.preopen_date} 開盤前` : `${d.date} 交易日夜盤`,
+      items.push({price:nightClose, label:staleNight ? "上次夜盤收盤（非今早）" : "台指期夜盤收盤",
+                  sub:staleNight ? `${d.stale_night_session_start} 15:00 起 · 歸屬 ${d.stale_night_date}` :
+                      (d.preopen_price != null ? `${d.preopen_date} 開盤前` : `${d.date} 交易日夜盤`),
                   cls:pre?"mark":""});
     if (dayClose != null)
       items.push({price:dayClose, label:"台指期收盤",
@@ -886,6 +889,7 @@ fetch("./data/gex_latest.json")
       ? `位階來自 ${d.date}(${d.dow})收盤結算,價格為 ${d.preopen_date} 夜盤收`
         + ` · 更新 ${d.updated}`
       : `${d.date}(${d.dow})收盤結算 · 更新 ${d.updated}`)
+      + (staleNight ? ` · 今早無新夜盤，沿用 ${d.date} 的位階` : "")
       + (basis == null ? " · 位階為選擇權座標" :
          ` · 台指期估算位階（${d.date} 基差 ${basis>=0?"+":""}${fmtPts(basis)} 點）`);
     $("gex-card").hidden = false;

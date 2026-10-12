@@ -146,7 +146,9 @@ def fetch_txf_range(start: dt.date, end: dt.date) -> pd.DataFrame:
       * 資料列尾端多一個逗號(20 欄對上 19 欄的表頭), 不指定 index_col=False
         的話 pandas 會把第一欄當索引, 整排欄位往左位移。
 
-    期交所的交易日: 夜盤在前(前日 15:00~當日 05:00), 日盤在後(08:45~13:45)。
+    期交所的交易日: 夜盤從前一交易日 15:00 起至隔日 05:00，
+    卻歸屬下一交易日；跨週末或連假時，歸屬日不等於夜盤實際結束日。
+    日盤為 08:45~13:45。
     夜盤那批沒有結算價也沒有 OI, 只有成交價 —— 這也是位階無法盤中更新的原因。
     """
     raw = _post_csv(TAIFEX_FUT_URL, "TX", start, end, index_col=False)
@@ -780,6 +782,17 @@ def preopen_snapshot(df: pd.DataFrame, txf: pd.DataFrame,
         return {}
     row = cand.sort_values("date").iloc[-1]
     price = float(row["txf_night"])
+    # 期交所把前一交易日開出的夜盤歸在「下一交易日」。跨週末／連假時，
+    # 例如 10/08 15:00~10/09 05:00 的行情會歸到 10/12；交易日標籤是
+    # 10/12，不代表週一早上剛有新交易。只有相鄰日才是新盤前快照。
+    session_start = dt.date.fromisoformat(levels_date)
+    assigned_day = dt.date.fromisoformat(row["date"])
+    if assigned_day != session_start + dt.timedelta(days=1):
+        return {
+            "stale_night_date": row["date"],
+            "stale_night_session_start": levels_date,
+            "stale_night_price": price,
+        }
     option_price = price - basis  # freeze the last known TX - option F basis
 
     day = dt.date.fromisoformat(levels_date)
@@ -844,7 +857,7 @@ def daily_update():
     basis = float(settle - implied) if pd.notna(settle) and pd.notna(implied) else None
     pre = preopen_snapshot(df, txf, latest["date"], basis)
     latest.update(pre)
-    latest["updated"] = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
+    latest["updated"] = dt.datetime.now(TPE).strftime("%Y-%m-%d %H:%M")
     # 位階可能是 NaN(當天找不到夠深的谷、或沒有零軸穿越)。json.dumps 預設會寫出
     # 裸的 NaN, 那不是合法 JSON, 前端 JSON.parse 會直接爆掉、卡片靜默消失。
     latest = {k: (None if pd.isna(v) else v) for k, v in latest.items()}
@@ -852,9 +865,12 @@ def daily_update():
     OUTPUT_PATH.write_text(json.dumps(latest, ensure_ascii=False, allow_nan=False),
                            encoding="utf-8")
     msg = f"完成: {latest['date']} | F={latest['F']} | regime={latest['regime']}"
-    if pre:
+    if "preopen_date" in pre:
         msg += (f" | 盤前 {pre['preopen_date']} 夜盤收 {pre['preopen_price']:.0f}"
                 f" -> regime={pre['preopen_regime']}")
+    elif "stale_night_date" in pre:
+        msg += (f" | {pre['stale_night_date']} 歸屬夜盤實際始於"
+                f" {pre['stale_night_session_start']}，不建立新盤前快照")
     print(msg)
     return True
 

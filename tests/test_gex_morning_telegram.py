@@ -26,6 +26,8 @@ sample = {"date": "2026-10-01", "F": 100., "txf_settle": 102.,
           "concentration_peak": 100., "concentration_valley": None}
 
 assert alert.check_snapshot(sample, {}, today)["status"] == "ready"
+holiday_snapshot = dict(sample, date="2026-10-08", preopen_date="2026-10-12")
+assert alert.check_snapshot(holiday_snapshot, {}, date(2026, 10, 12))["status"] == "skip"
 assert alert.check_snapshot(sample, {}, date(2026, 10, 3))["status"] == "skip"
 assert alert.check_snapshot(sample, {"last_sent_preopen_date": today.isoformat()},
                             today)["status"] == "quiet"
@@ -40,6 +42,7 @@ assert alert.check_snapshot(bad, {}, today)["status"] == "error"
 
 message = alert.format_message(sample)
 assert "Call Wall 112" in message  # 110 option strike + 2 futures basis
+assert "夜盤時段：2026-10-01 15:00～2026-10-02 05:00" in message
 assert "Put Wall 92" in message
 assert "Gamma Concentration" in message and "Signed GEX" in message
 assert "山谷 —" in message
