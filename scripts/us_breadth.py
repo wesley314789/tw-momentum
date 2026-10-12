@@ -18,8 +18,8 @@ us_breadth.py — 美股版動能篩選與市場廣度
   * 宇宙與市值 —— Nasdaq screener, 一次回傳全美約 7,000 檔
   * 每日 K 線 —— Yahoo chart API, 逐檔但一次給一整年
 
-因為 Yahoo 一趟就給一年份, 回補與每日更新的成本相同, 所以不另外存價格歷史
-(台股那邊要按月切片抓, 才需要累積檔案)。只有廣度的每日檔數會存下來。
+Yahoo 每次可回傳一年或兩年日線, 日常更新不用另存價格歷史。美股動能與
+站上 200MA 兩套廣度各自保留每日結果；歷史回補抓兩年, 日常更新抓一年。
 
 ⚠ Yahoo 這支是非官方 API, 沒有服務保證, 隨時可能改格式或擋人 —— 與台股用
 證交所官方資料的性質完全不同。抓不到的個股會被跳過並計數, 失敗率過高時會警告。
@@ -40,6 +40,7 @@ import requests
 
 ROOT = Path(__file__).resolve().parent.parent
 BREADTH_PATH = ROOT / "data" / "us_breadth.csv"
+MA200_PATH = ROOT / "data" / "us_ma200_breadth.csv"
 SNAPSHOT_DIR = ROOT / "data" / "us_universe"
 SNAPSHOT_COLS = ["date", "symbol", "yahoo", "name", "mcap", "captured_utc"]
 # 每個交易日通過篩選的名單 —— 上榜天數與族群日增減都靠它
@@ -248,6 +249,71 @@ def count_universe(arrs: dict, as_of: int, symbols=None) -> int:
     return n
 
 
+def ma200_participation(arrs: dict, as_of: int, symbols) -> tuple[int, int]:
+    """Count members closing above their own 200-day average on this date.
+
+    Match the existing US momentum screen's 201-bar eligibility rule. A stock
+    with no bar on as_of, insufficient history, or invalid prices is excluded
+    from both numerator and denominator. No future bar enters the average.
+    """
+    above = eligible = 0
+    for sym in symbols:
+        if sym not in arrs:
+            continue
+        dates, closes, _ = arrs[sym]
+        end = int(np.searchsorted(dates, as_of, "right"))
+        if end < SMA_LONG + 1 or dates[end - 1] != as_of:
+            continue
+        window = closes[end - SMA_LONG:end]
+        if not (np.isfinite(window).all() and (window > 0).all()):
+            continue
+        eligible += 1
+        above += bool(closes[end - 1] > window.mean())
+    return above, eligible
+
+
+def load_ma200() -> pd.DataFrame:
+    if MA200_PATH.exists():
+        return pd.read_csv(MA200_PATH, dtype={"date": str})
+    return pd.DataFrame(columns=["date", "count", "eligible", "pct",
+                                 "universe_basis", "coverage_pct"])
+
+
+def update_ma200(arrs: dict, cal: list[int], uni: pd.DataFrame,
+                 by_date: dict, backfill: bool = False) -> pd.DataFrame:
+    """Fill missing dates from the bars already fetched for the US scanner."""
+    old = load_ma200()
+    rows = [] if backfill else old.to_dict("records")
+    have = set() if backfill else set(old.date)
+    for o in cal:
+        d = dt.date.fromordinal(o).isoformat()
+        if d in have and o != cal[-1]:
+            continue
+        uni_day = by_date.get(d, uni)
+        symbols = set(uni_day.yahoo)
+        coverage = sum(sym in arrs for sym in symbols) / len(symbols) if symbols else 0
+        if coverage < 0.75:  # avoid publishing a Yahoo outage as a breadth collapse
+            continue
+        count, eligible = ma200_participation(arrs, o, symbols)
+        if eligible < 500:
+            continue
+        basis = ("observed_snapshot" if d in by_date else
+                 "reconstructed_current" if backfill or o != cal[-1] else
+                 "current_observation")
+        rows.append({"date": d, "count": count, "eligible": eligible,
+                     "pct": round(count / eligible * 100, 2),
+                     "universe_basis": basis,
+                     "coverage_pct": round(coverage * 100, 1)})
+    if not rows:
+        return old
+    result = pd.DataFrame(rows)
+    result = (result.drop_duplicates("date", keep="last")
+                    .sort_values("date").tail(KEEP_DAYS))
+    MA200_PATH.parent.mkdir(parents=True, exist_ok=True)
+    result.to_csv(MA200_PATH, index=False)
+    return result
+
+
 def load_breadth() -> pd.DataFrame:
     if BREADTH_PATH.exists():
         df = pd.read_csv(BREADTH_PATH, dtype={"date": str})
@@ -385,20 +451,24 @@ def main():
     ap.add_argument("--backfill", action="store_true",
                     help="連同歷史廣度與名單一起重算。抓兩年日 K, 扣掉 SMA200 的"
                          "回看約可重算 280 天(抓一年只剩 50 天左右)")
+    ap.add_argument("--ma200-backfill", action="store_true",
+                    help="只回補站上200MA的美股廣度，不重算既有動能名單")
     args = ap.parse_args()
-    rng = "2y" if args.backfill else "1y"
+    if args.backfill and args.ma200_backfill:
+        ap.error("--backfill 與 --ma200-backfill 不能同時使用")
+    rng = "2y" if args.backfill or args.ma200_backfill else "1y"
 
     uni = fetch_universe()
     print(f"宇宙: {len(uni)} 檔 (市值 > ${MIN_MCAP/1e6:.0f}M)")
-    snapshots = load_snapshots() if args.backfill else pd.DataFrame(columns=SNAPSHOT_COLS)
-    if args.backfill and not snapshots.empty:
+    snapshots = load_snapshots()
+    if (args.backfill or args.ma200_backfill) and not snapshots.empty:
         # Some symbols may since have delisted or fallen below the cap. Yahoo
         # may still lack their bars; the report labels the remaining coverage.
         historical = snapshots[~snapshots.yahoo.isin(uni.yahoo)].drop_duplicates("yahoo")
         fetch_symbols = pd.concat([uni.yahoo, historical.yahoo]).dropna().unique().tolist()
     else:
         fetch_symbols = uni.yahoo.tolist()
-    bench = fetch_bench(rng)
+    bench = None if args.ma200_backfill else fetch_bench(rng)
     bars = fetch_bars(fetch_symbols, rng=rng)
     if not bars:
         print("沒有取得任何日 K,中止。", file=sys.stderr)
@@ -412,6 +482,17 @@ def main():
                  .drop_duplicates(["date", "symbol"], keep="first")
                  if not latest_snapshot.empty else snapshots)
     by_date = {d: g.drop(columns="date") for d, g in snapshots.groupby("date")}
+    ma200 = update_ma200(arrs, cal, uni, by_date,
+                         backfill=args.backfill or args.ma200_backfill)
+    if args.ma200_backfill:
+        if not OUTPUT_PATH.exists():
+            raise FileNotFoundError("先跑一般模式，建立美股頁面的資料")
+        payload = json.loads(OUTPUT_PATH.read_text(encoding="utf-8"))
+        payload["ma200_breadth"] = pack_breadth(ma200.tail(120))
+        OUTPUT_PATH.write_text(json.dumps(payload, ensure_ascii=False,
+                                          allow_nan=False), encoding="utf-8")
+        print(f"美股站上200MA廣度: {len(ma200)} 個交易日")
+        return 0
     latest_uni = by_date.get(latest_date, uni)
     picks = screen(arrs, latest_uni, cal[-1], bench)
     rows = load_breadth().to_dict("records")
@@ -517,6 +598,7 @@ def main():
         "themes": groups,
         "member_days": len(mem_dates),
         "breadth": pack_breadth(breadth.tail(120)),
+        "ma200_breadth": pack_breadth(ma200.tail(120)),
     }, ensure_ascii=False, allow_nan=False), encoding="utf-8")
 
     print(f"完成: 通過 {len(picks)} 檔 / 可評估宇宙 "

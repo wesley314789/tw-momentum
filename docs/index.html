@@ -313,7 +313,7 @@ tbody tr:hover{background:var(--surface)}
     <div class="br-chart" id="br-chart"></div>
     <div class="br-legend" id="br-legend"></div>
     <div class="ma200-block" id="ma200-block" hidden>
-      <h2 class="br-title">全市場趨勢廣度 · 站上 200MA</h2>
+      <h2 class="br-title" id="ma200-title">全市場趨勢廣度 · 站上 200MA</h2>
       <div class="br-head">
         <div>
           <div class="br-now" id="ma200-now"></div>
@@ -322,7 +322,7 @@ tbody tr:hover{background:var(--surface)}
         <div class="br-stats" id="ma200-stats"></div>
       </div>
       <div class="ma200-chart" id="ma200-chart"></div>
-      <div class="br-legend">紅線：站上各自 200 日均線的比例 · 每檔股票等權計算</div>
+      <div class="br-legend" id="ma200-legend">紅線：站上各自 200 日均線的比例 · 每檔股票等權計算</div>
     </div>
     <h2 class="br-title">每日比較</h2>
     <table class="br-table">
@@ -381,7 +381,7 @@ const COLS_US = [
   {k:"days",   label:"上榜", num:true},
 ];
 
-let DATA = {daily:[], momentum:[], breakout_watchlist:[], fresh_breakout:[], breadth:[], ma200_breadth:[], us:[], usbreadth:[]};
+let DATA = {daily:[], momentum:[], breakout_watchlist:[], fresh_breakout:[], breadth:[], ma200_breadth:[], us:[], usbreadth:[], usma200_breadth:[]};
 let tab = "daily";
 let sortKey = "chg_pct", sortDir = -1;
 const sectorOpen = new Set();
@@ -691,18 +691,27 @@ function movingAvg(v, n = MA_N){
 
 function renderMa200(){
   const box = $("ma200-block");
-  const series = (DATA.ma200_breadth || []).filter(x=>
+  const us = tab === "usbreadth";
+  const series = ((us ? DATA.usma200_breadth : DATA.ma200_breadth) || []).filter(x=>
     x.eligible > 0 && Number.isFinite(x.pct));
-  box.hidden = tab !== "breadth" || !series.length;
+  box.hidden = !["breadth", "usbreadth"].includes(tab) || !series.length;
   if(box.hidden) return;
 
   const last = series[series.length-1];
   const prev = series.length > 1 ? series[series.length-2] : null;
   const change = prev ? last.pct - prev.pct : null;
   $("ma200-now").innerHTML = `${last.pct.toFixed(2)}%<small>${last.count} / ${last.eligible} 檔</small>`;
-  const actionsThrough = DATA.ma200_actions_through;
-  $("ma200-sub").textContent = `${last.date} · 使用已知除權息校正價格`
-    + (actionsThrough && actionsThrough < last.date ? ` · 校正資料截至 ${actionsThrough}` : "");
+  $("ma200-title").textContent = us ? "美股趨勢廣度 · 站上 200MA" : "全市場趨勢廣度 · 站上 200MA";
+  if(us){
+    $("ma200-sub").textContent = `${last.date} · 市值 > $5 億`
+      + (last.coverage_pct != null ? ` · 行情取得 ${last.coverage_pct.toFixed(1)}%` : "");
+    $("ma200-legend").textContent = "紅線：站上各自 200 日均線的比例 · 等權計算；無當日股票清單的歷史日期以現今清單回推，含倖存者偏差";
+  }else{
+    const actionsThrough = DATA.ma200_actions_through;
+    $("ma200-sub").textContent = `${last.date} · 使用已知除權息校正價格`
+      + (actionsThrough && actionsThrough < last.date ? ` · 校正資料截至 ${actionsThrough}` : "");
+    $("ma200-legend").textContent = "紅線：站上各自 200 日均線的比例 · 每檔股票等權計算";
+  }
   $("ma200-stats").innerHTML = [
     ["對前日", change==null ? "—" : `${change>=0?"+":""}${change.toFixed(2)}pp`],
     ["近段最高", `${Math.max(...series.map(x=>x.pct)).toFixed(1)}%`],
@@ -776,9 +785,9 @@ function renderBreadth(){
     `<span><s style="background:var(--amber);opacity:.55"></s>每日通過檔數</span>`
     + averages.map(s=>`<span><s style="background:${s.color}"></s>${s.n} 日移動平均</span>`).join("");
 
-  const ma200ByDate = new Map((DATA.ma200_breadth || []).map(x=>[x.date,x]));
+  const ma200ByDate = new Map(((us ? DATA.usma200_breadth : DATA.ma200_breadth) || []).map(x=>[x.date,x]));
   $("br-thead").innerHTML = ["日期", "通過檔數", "佔全市場", "對前日", "10MA", "20MA",
-    ...(us ? [] : ["站上200MA", "200MA檔數"]), ""].map(x=>`<th>${x}</th>`).join("");
+    "站上200MA", "200MA檔數", ""].map(x=>`<th>${x}</th>`).join("");
   $("br-tbody").innerHTML = b.slice().reverse().map((x,i,arr)=>{
     const nx = arr[i+1];                      // 反轉後,下一筆才是前一天
     const d = nx ? x.count - nx.count : null;
@@ -789,7 +798,7 @@ function renderBreadth(){
       return `<td class="ma">${m==null ? "—" : m.toFixed(0)}</td>`;
     }).join("");
     const broad = ma200ByDate.get(x.date);
-    const broadCells = us ? "" : broad
+    const broadCells = broad
       ? `<td>${broad.pct.toFixed(2)}%</td><td>${broad.count} / ${broad.eligible}</td>`
       : "<td>—</td><td>—</td>";
     return `<tr>
@@ -851,6 +860,7 @@ fetch("./data/us_latest.json")
   .then(d=>{
     DATA.us = d.picks || [];
     DATA.usbreadth = d.breadth || [];
+    DATA.usma200_breadth = d.ma200_breadth || [];
     DATA.us_meta = d;
     $("cnt-us").textContent = DATA.us.length;
     $("cnt-usthemes").textContent = (d.themes||[]).length;
