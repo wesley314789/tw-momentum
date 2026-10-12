@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parent.parent
 STATE = ROOT / "data" / "market_risk_alert_state.json"
 
 
-def participation(history, actions, adjusted):
+def participation(history, actions, adjusted, window=60, max_universe_days=None):
     h = history.sort_values(["code", "date"]).drop_duplicates(
         ["code", "date"], keep="last"
     ).copy()
@@ -40,17 +40,25 @@ def participation(history, actions, adjusted):
         h["price"] = h.close
         unmatched = pd.Series(False, index=h.index)
     g = h.groupby("code", sort=False)
-    ma60 = g.price.transform(lambda s: s.rolling(60, min_periods=60).mean())
+    ma = g.price.transform(lambda s: s.rolling(window, min_periods=window).mean())
     jumps = g.price.pct_change().abs().gt(.105).fillna(False) | unmatched
-    clean = g.apply(lambda x: jumps.loc[x.index].rolling(60, min_periods=60).sum(),
-                    include_groups=False).reset_index(level=0, drop=True).sort_index().eq(0)
-    eligible = ma60.notna() & h.price.notna() & clean
+    clean = jumps.groupby(h["code"], sort=False).transform(
+        lambda s: s.rolling(window, min_periods=window).sum().eq(0))
+    eligible = ma.notna() & h.price.notna() & clean
+    if max_universe_days is not None:
+        # Require one earlier bar to verify the first of the window's 200 bars
+        # against a prior close. Without it, a jump at the edge of the daily
+        # 280-session history may be treated differently from a long backfill.
+        session = h["date"].map({d: i for i, d in enumerate(sorted(h["date"].unique()))})
+        prior = session.groupby(h["code"], sort=False).shift(window)
+        eligible &= (session - prior < max_universe_days)
     h["eligible"] = eligible
-    h["above"] = eligible & h.price.gt(ma60)
+    h["above"] = eligible & h.price.gt(ma)
     out = h.groupby("date").agg(eligible=("eligible", "sum"),
                                 above=("above", "sum")).reset_index()
-    out["pct60"] = out.above / out.eligible.replace(0, np.nan) * 100
-    return out[["date", "eligible", "pct60"]]
+    pct_col = f"pct{window}"
+    out[pct_col] = out.above / out.eligible.replace(0, np.nan) * 100
+    return out[["date", "eligible", "above", pct_col]]
 
 
 def signals(index, leaders, adjusted, raw):

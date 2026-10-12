@@ -145,6 +145,16 @@ tbody tr:hover{background:var(--surface)}
 .br-table th:first-child,.br-table td:first-child{text-align:left}
 .br-bar{display:inline-block;height:6px;border-radius:3px;background:var(--amber);
   opacity:.5;vertical-align:middle}
+.br-title{font-size:14px;margin-top:16px}
+.ma200-block{margin-top:24px;padding-top:16px;border-top:1px solid var(--line)}
+.ma200-block .br-head{padding-top:8px}
+.ma200-chart{height:130px;border-bottom:1px solid var(--line)}
+.ma200-chart svg{display:block;width:100%;height:100%}
+.ma200-chart .mid{stroke:var(--line);stroke-width:1;vector-effect:non-scaling-stroke}
+.ma200-chart .series{fill:none;stroke:var(--up);stroke-width:2;
+  stroke-linejoin:round;vector-effect:non-scaling-stroke}
+.ma200-chart circle{fill:var(--up);opacity:0}
+.ma200-chart circle:hover{opacity:1}
 
 .badge.new{background:rgba(76,141,255,.18);color:#7aa9ff;border:1px solid rgba(76,141,255,.35)}
 .th-delta{font-family:var(--mono);font-size:12px;margin-left:6px}
@@ -292,6 +302,7 @@ tbody tr:hover{background:var(--surface)}
   <div class="th-wrap" id="themes-panel" hidden></div>
 
   <section id="breadth-panel" hidden>
+    <h2 class="br-title" id="br-title">動能領漲廣度</h2>
     <div class="br-head">
       <div>
         <div class="br-now" id="br-now"></div>
@@ -301,8 +312,21 @@ tbody tr:hover{background:var(--surface)}
     </div>
     <div class="br-chart" id="br-chart"></div>
     <div class="br-legend" id="br-legend"></div>
+    <div class="ma200-block" id="ma200-block" hidden>
+      <h2 class="br-title">全市場趨勢廣度 · 站上 200MA</h2>
+      <div class="br-head">
+        <div>
+          <div class="br-now" id="ma200-now"></div>
+          <div class="br-sub" id="ma200-sub"></div>
+        </div>
+        <div class="br-stats" id="ma200-stats"></div>
+      </div>
+      <div class="ma200-chart" id="ma200-chart"></div>
+      <div class="br-legend">紅線：站上各自 200 日均線的比例 · 每檔股票等權計算</div>
+    </div>
+    <h2 class="br-title">每日比較</h2>
     <table class="br-table">
-      <thead><tr><th>日期</th><th>通過檔數</th><th>佔全市場</th><th>對前日</th><th>10MA</th><th>20MA</th><th></th></tr></thead>
+      <thead><tr id="br-thead"></tr></thead>
       <tbody id="br-tbody"></tbody>
     </table>
   </section>
@@ -357,7 +381,7 @@ const COLS_US = [
   {k:"days",   label:"上榜", num:true},
 ];
 
-let DATA = {daily:[], momentum:[], breakout_watchlist:[], fresh_breakout:[], breadth:[], us:[], usbreadth:[]};
+let DATA = {daily:[], momentum:[], breakout_watchlist:[], fresh_breakout:[], breadth:[], ma200_breadth:[], us:[], usbreadth:[]};
 let tab = "daily";
 let sortKey = "chg_pct", sortDir = -1;
 const sectorOpen = new Set();
@@ -665,10 +689,42 @@ function movingAvg(v, n = MA_N){
   return out;
 }
 
+function renderMa200(){
+  const box = $("ma200-block");
+  const series = (DATA.ma200_breadth || []).filter(x=>
+    x.eligible > 0 && Number.isFinite(x.pct));
+  box.hidden = tab !== "breadth" || !series.length;
+  if(box.hidden) return;
+
+  const last = series[series.length-1];
+  const prev = series.length > 1 ? series[series.length-2] : null;
+  const change = prev ? last.pct - prev.pct : null;
+  $("ma200-now").innerHTML = `${last.pct.toFixed(2)}%<small>${last.count} / ${last.eligible} 檔</small>`;
+  const actionsThrough = DATA.ma200_actions_through;
+  $("ma200-sub").textContent = `${last.date} · 使用已知除權息校正價格`
+    + (actionsThrough && actionsThrough < last.date ? ` · 校正資料截至 ${actionsThrough}` : "");
+  $("ma200-stats").innerHTML = [
+    ["對前日", change==null ? "—" : `${change>=0?"+":""}${change.toFixed(2)}pp`],
+    ["近段最高", `${Math.max(...series.map(x=>x.pct)).toFixed(1)}%`],
+    ["近段最低", `${Math.min(...series.map(x=>x.pct)).toFixed(1)}%`],
+  ].map(([k,v])=>`<div class="br-stat"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
+
+  const pts = series.map((x,i)=>`${i+0.5},${(100-x.pct).toFixed(2)}`).join(" ");
+  const dots = series.map((x,i)=>
+    `<circle cx="${i+0.5}" cy="${(100-x.pct).toFixed(2)}" r="0.45">`
+    + `<title>${x.date}: ${x.pct.toFixed(2)}% (${x.count}/${x.eligible})</title></circle>`
+  ).join("");
+  $("ma200-chart").innerHTML = `<svg viewBox="0 0 ${series.length} 100" preserveAspectRatio="none" role="img" aria-label="站上200日均線的股票比例走勢">`
+    + `<line class="mid" x1="0" y1="50" x2="${series.length}" y2="50"></line>`
+    + `<polyline class="series" points="${pts}"></polyline>${dots}</svg>`;
+}
+
 function renderBreadth(){
   const us = tab==="usbreadth";
   const b = (us ? DATA.usbreadth : DATA.breadth) || [];
   const unit = us ? "檔 / 美股" : "檔 / ";
+  $("br-title").textContent = us ? "美股動能廣度" : "動能領漲廣度";
+  renderMa200();
   if(!b.length){
     $("br-now").textContent = "—";
     $("br-sub").textContent = us
@@ -720,6 +776,9 @@ function renderBreadth(){
     `<span><s style="background:var(--amber);opacity:.55"></s>每日通過檔數</span>`
     + averages.map(s=>`<span><s style="background:${s.color}"></s>${s.n} 日移動平均</span>`).join("");
 
+  const ma200ByDate = new Map((DATA.ma200_breadth || []).map(x=>[x.date,x]));
+  $("br-thead").innerHTML = ["日期", "通過檔數", "佔全市場", "對前日", "10MA", "20MA",
+    ...(us ? [] : ["站上200MA", "200MA檔數"]), ""].map(x=>`<th>${x}</th>`).join("");
   $("br-tbody").innerHTML = b.slice().reverse().map((x,i,arr)=>{
     const nx = arr[i+1];                      // 反轉後,下一筆才是前一天
     const d = nx ? x.count - nx.count : null;
@@ -729,12 +788,17 @@ function renderBreadth(){
       const m = s.values[b.length-1-i];
       return `<td class="ma">${m==null ? "—" : m.toFixed(0)}</td>`;
     }).join("");
+    const broad = ma200ByDate.get(x.date);
+    const broadCells = us ? "" : broad
+      ? `<td>${broad.pct.toFixed(2)}%</td><td>${broad.count} / ${broad.eligible}</td>`
+      : "<td>—</td><td>—</td>";
     return `<tr>
       <td>${x.date}</td>
       <td>${x.count}</td>
       <td>${x.pct.toFixed(2)}%</td>
       <td class="${cls}">${dz}</td>
       ${cells}
+      ${broadCells}
       <td><span class="br-bar" style="width:${x.count/max*140}px"></span></td>
     </tr>`;
   }).join("");

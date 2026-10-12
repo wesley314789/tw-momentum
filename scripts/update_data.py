@@ -911,6 +911,17 @@ def enrich_and_write(merged: pd.DataFrame, idx_hist: pd.DataFrame | None = None)
 
     result["momentum"] = recs
     result["breadth"] = breadth.tail(120).to_dict("records")
+    try:
+        try:
+            import ma200_breadth
+        except ModuleNotFoundError:
+            from scripts import ma200_breadth
+        ma200, actions_through = ma200_breadth.update(merged)
+        result["ma200_breadth"] = ma200.tail(120).to_dict("records")
+        result["ma200_actions_through"] = actions_through
+    except Exception as e:
+        print(f"200MA 市場廣度計算失敗({e.__class__.__name__}): {e}")
+        result["ma200_breadth"] = []
 
     write_result(result)
     print(f"完成:{result['trade_date']} | 全市場 {result['universe']} 檔 | "
