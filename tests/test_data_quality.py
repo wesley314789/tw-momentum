@@ -53,14 +53,19 @@ tw_hist = pd.DataFrame({"date": tw_dates, "code": ["1111"] * len(tw_dates),
                         "value": [1e8] * len(tw_dates), "_corp": [False] * len(tw_dates)})
 shares = pd.DataFrame({"code": ["1111"], "shares": [2.5e7]})
 idx = pd.DataFrame({"date": tw_dates, "close": [100.] * len(tw_dates)})
-assert tw.momentum_screen(tw_hist, shares, idx=idx).code.tolist() == ["1111"]
+selected = tw.momentum_screen(tw_hist, shares, idx=idx)
+assert selected.code.tolist() == ["1111"]
+assert selected.high52_distance_pct.iloc[0] == 0.0
+assert selected.high52.iloc[0] == 50.0
 assert tw.momentum_screen(tw_hist.iloc[:-1], shares, idx=idx).empty  # 未滿 52 週
 below_high = tw_hist.copy()
 below_high.loc[below_high.index[-60], "signal_close"] = tw_close[-1] * .5 / .74
 assert tw.momentum_screen(below_high, shares, idx=idx).empty  # 距高點 26%
 at_limit = tw_hist.copy()
 at_limit.loc[at_limit.index[-60], "signal_close"] = tw_close[-1] * .5 / .75
-assert tw.momentum_screen(at_limit, shares, idx=idx).code.tolist() == ["1111"]
+at_limit_pick = tw.momentum_screen(at_limit, shares, idx=idx)
+assert at_limit_pick.code.tolist() == ["1111"]
+assert at_limit_pick.high52_distance_pct.iloc[0] == 25.0
 with tempfile.TemporaryDirectory() as tmp:
     us.SNAPSHOT_DIR = Path(tmp) / "snapshots"
     us.BREADTH_PATH = Path(tmp) / "breadth.csv"

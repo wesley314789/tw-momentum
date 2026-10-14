@@ -409,9 +409,10 @@ def momentum_screen(hist: pd.DataFrame, shares: pd.DataFrame,
             continue
         ix_perf = (ix_today / ix_base - 1) * 100
         excess = perf - ix_perf
+        high52 = c[-BR_HIGH52_DAYS:].max()
         if not (close > c[-200:].mean()
                 and c[-10:].mean() > c[-20:].mean()
-                and close >= c[-BR_HIGH52_DAYS:].max() * BR_MIN_HIGH52_RATIO
+                and close >= high52 * BR_MIN_HIGH52_RATIO
                 and raw_close * n > BR_MCAP
                 and turnover > BR_TURNOVER
                 and excess > BR_EXCESS):
@@ -421,6 +422,9 @@ def momentum_screen(hist: pd.DataFrame, shares: pd.DataFrame,
                      "perf_1m": round(perf, 1),
                      "idx_1m": round(ix_perf, 1),      # 同一段期間的大盤漲幅
                      "excess_1m": round(excess, 1),    # 超額 = 個股 - 大盤
+                     # 與 52 週篩選共用同一個最高收盤價；0% 表示已到新高。
+                     "high52": round(float(high52), 2),
+                     "high52_distance_pct": round((1 - close / high52) * 100, 2),
                      "value": round(turnover / 1e8, 2),
                      "mcap": round(raw_close * n / 1e8, 0)})
     df = pd.DataFrame(rows)

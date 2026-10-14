@@ -348,6 +348,7 @@ const COLS_MOMENTUM = [
   {k:"code",   label:"代號", num:false},
   {k:"name",   label:"名稱", num:false},
   {k:"close",  label:"收盤", num:true},
+  {k:"high52_distance_pct", label:"距52週新高", num:true},
   {k:"perf_1m",label:"1月績效", num:true},
   {k:"excess_1m",label:"超額", num:true},
   {k:"value",  label:"成交值(億)", num:true},
@@ -471,6 +472,7 @@ const fmt = (v,k)=>{
   // 股票也會過, 一個月績效可以是負的, 寫死 "+" 會顯示成 "+-5.0%"
   if(k==="perf_1m" || k==="excess_1m") return (v>0?"+":"")+v.toFixed(1)+"%";
   if(k==="off_high") return v.toFixed(1)+"%";
+  if(k==="high52_distance_pct") return v.toFixed(2)+"%";
   if(k==="mcap") return tab==="us" ? v.toFixed(1) : Math.round(v).toLocaleString("en");
   if(k==="turnover") return Math.round(v).toLocaleString("en");
   if(k==="close") return v.toLocaleString("en",{minimumFractionDigits:v<100?2:1});
@@ -491,7 +493,7 @@ function renderHead(){
   $("thead").querySelectorAll("th").forEach(th=>{
     th.onclick = ()=>{
       const k = th.dataset.k;
-      if(sortKey===k) sortDir*=-1; else {sortKey=k; sortDir=-1;}
+      if(sortKey===k) sortDir*=-1; else {sortKey=k; sortDir=k==="high52_distance_pct"?1:-1;}
       render();
     };
   });
@@ -565,6 +567,7 @@ function render(){
         <td>${x.code}</td>
         <td class="name">${x.name||""}<span class="mk">${x.market||""}</span></td>
         <td>${fmt(x.close,"close")}</td>
+        <td title="近252個交易日最高收盤 ${fmt(x.high52,"close")} 元；差距＝（最高收盤－現價）÷最高收盤">${fmt(x.high52_distance_pct,"high52_distance_pct")}</td>
         <td><span class="badge ${x.perf_1m>=0?"up":"down"}">${fmt(x.perf_1m,"perf_1m")}</span></td>
         <td title="個股 ${fmt(x.perf_1m,"perf_1m")} − 同期加權指數 ${fmt(x.idx_1m,"perf_1m")}">${fmt(x.excess_1m,"excess_1m")}</td>
         <td>${fmt(x.value)}</td>
