@@ -1,5 +1,4 @@
 date,count,eligible,pct,universe_basis,coverage_pct
-2025-09-03,1929,3017,63.94,reconstructed_current,96.1
 2025-09-04,1978,3017,65.56,reconstructed_current,96.1
 2025-09-05,2012,3018,66.67,reconstructed_current,96.1
 2025-09-08,2002,3018,66.34,reconstructed_current,96.1
@@ -279,3 +278,4 @@ date,count,eligible,pct,universe_basis,coverage_pct
 2026-10-09,1436,3142,45.7,observed_snapshot,95.9
 2026-10-12,1439,3133,45.93,observed_snapshot,95.7
 2026-10-13,1425,3125,45.6,observed_snapshot,95.6
+2026-10-14,1330,3124,42.57,observed_snapshot,96.1
