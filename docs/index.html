@@ -173,6 +173,10 @@ tbody tr:hover{background:var(--surface)}
 .th-group table{font-size:13px}
 .th-group tbody td{padding:7px 14px}
 .th-group thead{display:none}
+.th-table-scroll{overflow-x:auto}
+.th-group.tw-theme table{min-width:700px}
+.th-group.tw-theme thead{display:table-header-group}
+.th-group.tw-theme thead th{padding:6px 14px;color:var(--muted);font-size:11px;font-weight:500}
 .flag{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:4px;
   font-size:11px;font-family:var(--sans);background:var(--up-dim);color:var(--up)}
 
@@ -652,6 +656,7 @@ function renderThemes(){
         <td>${x.code}</td>
         <td class="name">${x.name}${flags}${src}</td>
         <td>${fmt(x.close,"close")}</td>
+        <td title="近252個交易日最高收盤 ${fmt(x.high52,"close")} 元；差距＝（最高收盤－現價）÷最高收盤">${fmt(x.high52_distance_pct,"high52_distance_pct")}</td>
         <td><span class="badge up">${fmt(x.perf_1m,"perf_1m")}</span></td>
         <td>${fmt(x.value)}</td>
         <td title="自 ${x.since||"—"} 起連續上榜">${fmt(x.days,"days")}</td>
@@ -659,7 +664,7 @@ function renderThemes(){
     }).join("");
     const val = us ? `成交值 <b>$${g.value.toFixed(0)}</b>M`
                    : `成交值 <b>${g.value.toFixed(0)}</b> 億`;
-    return `<div class="th-group">
+    return `<div class="th-group ${us?"":"tw-theme"}">
       <div class="th-head">
         <span class="th-name">${g.theme}</span>
         <span class="th-stat"><b>${g.count}</b> 檔${
@@ -670,7 +675,7 @@ function renderThemes(){
         <span class="th-stat">${val}</span>
         <span class="th-stat">平均 <b>+${g.perf.toFixed(0)}%</b></span>
       </div>
-      <table><tbody>${rows}</tbody></table></div>`;
+      <div class="th-table-scroll"><table>${us?"":`<thead><tr><th>代號</th><th>名稱</th><th>收盤</th><th>距52週新高</th><th>1月績效</th><th>成交值(億)</th><th>上榜</th></tr></thead>`}<tbody>${rows}</tbody></table></div></div>`;
   }).join("");
 
   $("themes-panel").querySelectorAll("tr[data-url]").forEach(tr=>{
