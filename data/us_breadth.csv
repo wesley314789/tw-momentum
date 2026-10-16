@@ -1,5 +1,4 @@
 date,count,universe,pct,universe_basis,coverage_pct
-2025-09-05,475,3070,15.47,unknown_legacy,
 2025-09-08,491,3070,15.99,unknown_legacy,
 2025-09-09,423,3070,13.78,unknown_legacy,
 2025-09-10,330,3071,10.75,unknown_legacy,
@@ -279,3 +278,4 @@ date,count,universe,pct,universe_basis,coverage_pct
 2026-10-13,148,3124,4.74,observed_snapshot,96.0
 2026-10-14,108,3124,3.46,observed_snapshot,96.1
 2026-10-15,147,3103,4.74,observed_snapshot,96.0
+2026-10-16,171,3112,5.49,observed_snapshot,96.0
