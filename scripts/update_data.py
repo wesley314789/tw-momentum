@@ -883,6 +883,18 @@ def enrich_and_write(merged: pd.DataFrame, idx_hist: pd.DataFrame | None = None)
         print(f"官方產業動能計算失敗({e.__class__.__name__}): {e}")
         result["industry_breadth"] = {"date": result["trade_date"], "sectors": []}
 
+    try:
+        try:
+            import turnover_rotation
+        except ModuleNotFoundError:
+            from scripts import turnover_rotation
+        sector_path = industry_mapping.PATH
+        mapping = pd.read_csv(sector_path, dtype={"code": str, "industry_code": str})
+        result["turnover_rotation"] = turnover_rotation.taiwan_series(merged, mapping)
+    except Exception as e:
+        print(f"科技／傳產成交值計算失敗({e.__class__.__name__}): {e}")
+        result["turnover_rotation"] = []
+
     # 上榜天數。用有紀錄的交易日序列, 不是日曆天 —— 隔週末不算中斷。
     mem_dates = sorted(members["date"].unique())
     st = streaks(members, mem_dates)

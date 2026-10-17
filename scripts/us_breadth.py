@@ -42,7 +42,7 @@ ROOT = Path(__file__).resolve().parent.parent
 BREADTH_PATH = ROOT / "data" / "us_breadth.csv"
 MA200_PATH = ROOT / "data" / "us_ma200_breadth.csv"
 SNAPSHOT_DIR = ROOT / "data" / "us_universe"
-SNAPSHOT_COLS = ["date", "symbol", "yahoo", "name", "mcap", "captured_utc"]
+SNAPSHOT_COLS = ["date", "symbol", "yahoo", "name", "mcap", "sector", "captured_utc"]
 # 每個交易日通過篩選的名單 —— 上榜天數與族群日增減都靠它
 
 OUTPUT_PATH = ROOT / "docs" / "data" / "us_latest.json"
@@ -81,17 +81,19 @@ def clean_name(name: str) -> str:
 
 
 def fetch_universe() -> pd.DataFrame:
-    """Nasdaq screener:一次拿全美股清單與市值。"""
+    """Nasdaq screener download view also includes the official sector field."""
     r = requests.get(NASDAQ_URL, headers=HEADERS, timeout=90,
-                     params={"tableonly": "true", "limit": 10000, "offset": 0})
+                     params={"download": "true", "limit": 10000, "offset": 0})
     r.raise_for_status()
-    rows = r.json()["data"]["table"]["rows"]
+    rows = r.json()["data"]["rows"]
     df = pd.DataFrame(rows)
+    if "sector" not in df or df["sector"].isna().all():
+        raise ValueError("Nasdaq screener 沒有提供產業欄位")
     df["mcap"] = pd.to_numeric(df.marketCap.str.replace(",", ""), errors="coerce")
     df = df[df.mcap > MIN_MCAP].copy()
     # Yahoo 的代號用 '-' 不是 '/'(BRK/B -> BRK-B)
     df["yahoo"] = df.symbol.str.replace("/", "-", regex=False)
-    return df[["symbol", "yahoo", "name", "mcap"]].reset_index(drop=True)
+    return df[["symbol", "yahoo", "name", "mcap", "sector"]].reset_index(drop=True)
 
 
 def _one(session: requests.Session, sym: str, retries: int = 2, rng: str = "1y"):
@@ -353,7 +355,10 @@ def save_snapshot(date: str, universe: pd.DataFrame,
     if not 0 <= lag_hours <= 18:
         print(f"  不存 {date} 的歷史宇宙: 距收盤 {lag_hours:.1f} 小時，非當時快照")
         return pd.DataFrame(columns=SNAPSHOT_COLS)
-    rows = universe[["symbol", "yahoo", "name", "mcap"]].copy()
+    cols = ["symbol", "yahoo", "name", "mcap"]
+    if "sector" in universe:
+        cols.append("sector")
+    rows = universe[cols].copy()
     rows.insert(0, "date", date)
     rows["captured_utc"] = now.isoformat()
     rows = rows.drop_duplicates(["date", "symbol"], keep="first")
@@ -476,6 +481,15 @@ def main():
 
     arrs = to_arrays(bars)
     cal = trading_days(arrs)
+    try:
+        try:
+            import turnover_rotation
+        except ModuleNotFoundError:
+            from scripts import turnover_rotation
+        rotation = turnover_rotation.us_series(arrs, uni, cal)
+    except Exception as e:
+        print(f"美股科技／非科技成交額計算失敗({e.__class__.__name__}): {e}")
+        rotation = []
     latest_date = dt.date.fromordinal(cal[-1]).isoformat()
     latest_snapshot = save_snapshot(latest_date, uni)
     snapshots = (pd.concat([snapshots, latest_snapshot], ignore_index=True)
@@ -599,6 +613,7 @@ def main():
         "member_days": len(mem_dates),
         "breadth": pack_breadth(breadth.tail(120)),
         "ma200_breadth": pack_breadth(ma200.tail(120)),
+        "turnover_rotation": rotation,
     }, ensure_ascii=False, allow_nan=False), encoding="utf-8")
 
     print(f"完成: 通過 {len(picks)} 檔 / 可評估宇宙 "

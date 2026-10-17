@@ -155,6 +155,18 @@ tbody tr:hover{background:var(--surface)}
   stroke-linejoin:round;vector-effect:non-scaling-stroke}
 .ma200-chart circle{fill:var(--up);opacity:0}
 .ma200-chart circle:hover{opacity:1}
+.rotation-block{margin-top:24px;padding-top:16px;border-top:1px solid var(--line)}
+.rotation-track{display:flex;height:12px;border-radius:6px;overflow:hidden;background:var(--surface-2);margin:12px 0 8px}
+.rotation-tech{background:var(--amber)}
+.rotation-trad{background:var(--blue,#4c8dff)}
+.rotation-chart{height:125px;border-bottom:1px solid var(--line);margin-top:10px}
+.rotation-chart svg{display:block;width:100%;height:100%}
+.rotation-chart polyline{fill:none;stroke-width:2;vector-effect:non-scaling-stroke}
+.rotation-chart .daily{stroke:var(--amber)}
+.rotation-chart .average{stroke:var(--blue,#4c8dff)}
+.rotation-chart circle{fill:var(--amber);opacity:0}
+.rotation-chart circle:hover{opacity:1}
+.rotation-note{font-size:11px;color:var(--muted);margin-top:8px}
 
 .badge.new{background:rgba(76,141,255,.18);color:#7aa9ff;border:1px solid rgba(76,141,255,.35)}
 .th-delta{font-family:var(--mono);font-size:12px;margin-left:6px}
@@ -328,6 +340,20 @@ tbody tr:hover{background:var(--surface)}
       <div class="ma200-chart" id="ma200-chart"></div>
       <div class="br-legend" id="ma200-legend">紅線：站上各自 200 日均線的比例 · 每檔股票等權計算</div>
     </div>
+    <div class="rotation-block" id="rotation-block" hidden>
+      <h2 class="br-title" id="rotation-title">科技／傳產成交值輪動</h2>
+      <div class="br-head">
+        <div>
+          <div class="br-now" id="rotation-now"></div>
+          <div class="br-sub" id="rotation-sub"></div>
+        </div>
+        <div class="br-stats" id="rotation-stats"></div>
+      </div>
+      <div class="rotation-track" id="rotation-track"></div>
+      <div class="br-legend" id="rotation-legend"></div>
+      <div class="rotation-chart" id="rotation-chart"></div>
+      <div class="rotation-note" id="rotation-note"></div>
+    </div>
     <h2 class="br-title">每日比較</h2>
     <table class="br-table">
       <thead><tr id="br-thead"></tr></thead>
@@ -386,7 +412,7 @@ const COLS_US = [
   {k:"days",   label:"上榜", num:true},
 ];
 
-let DATA = {daily:[], momentum:[], breakout_watchlist:[], fresh_breakout:[], breadth:[], ma200_breadth:[], us:[], usbreadth:[], usma200_breadth:[]};
+let DATA = {daily:[], momentum:[], breakout_watchlist:[], fresh_breakout:[], breadth:[], ma200_breadth:[], twrotation:[], us:[], usbreadth:[], usma200_breadth:[], usrotation:[]};
 let tab = "daily";
 let sortKey = "chg_pct", sortDir = -1;
 const sectorOpen = new Set();
@@ -736,12 +762,64 @@ function renderMa200(){
     + `<polyline class="series" points="${pts}"></polyline>${dots}</svg>`;
 }
 
+function renderRotation(){
+  const us = tab === "usbreadth";
+  const series = (us ? DATA.usrotation : DATA.twrotation).filter(x=>
+    Number.isFinite(x.tech_share_pct) && x.tech_value > 0 && x.traditional_value > 0);
+  const box = $("rotation-block");
+  box.hidden = !series.length;
+  if(box.hidden) return;
+  const last = series[series.length-1];
+  const prev = series.length > 1 ? series[series.length-2] : null;
+  const recent = series.slice(-20);
+  const full20 = recent.length === 20;
+  const mean = key => recent.reduce((sum,x)=>sum+x[key],0)/recent.length;
+  const ma20 = full20 ? mean("tech_share_pct") : null;
+  const pp = x => x==null ? "—" : `${x>=0?"+":""}${x.toFixed(2)}pp`;
+  const unit = us ? "$B" : "億元";
+  const divisor = us ? 1e9 : 1e8;
+  const label = us ? "非科技產業" : "傳產";
+  const value = v => `${(v/divisor).toLocaleString("zh-TW",{maximumFractionDigits:1})} ${unit}`;
+  $("rotation-title").textContent = us ? "美股科技／非科技成交額輪動" : "科技／傳產成交值輪動";
+  $("rotation-now").innerHTML = `${last.tech_share_pct.toFixed(1)}%<small>科技占兩組合計</small>`;
+  $("rotation-sub").textContent = `${last.date} · 科技 ${value(last.tech_value)} · ${label} ${value(last.traditional_value)}`;
+  $("rotation-stats").innerHTML = [
+    ["對前日", pp(prev ? last.tech_share_pct-prev.tech_share_pct : null)],
+    ["對 20 日均", pp(ma20==null ? null : last.tech_share_pct-ma20)],
+    ["科技成交額／20日均", full20 ? `${(last.tech_value/mean("tech_value")).toFixed(2)}×` : "—"],
+    [`${label}成交額／20日均`, full20 ? `${(last.traditional_value/mean("traditional_value")).toFixed(2)}×` : "—"],
+  ].map(([k,v])=>`<div class="br-stat"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
+  $("rotation-track").innerHTML = `<span class="rotation-tech" style="width:${last.tech_share_pct}%"></span>`
+    + `<span class="rotation-trad" style="width:${100-last.tech_share_pct}%"></span>`;
+  $("rotation-legend").innerHTML = `<span><s style="background:var(--amber)"></s>科技</span>`
+    + `<span><s style="background:var(--blue,#4c8dff)"></s>${label}</span>`;
+  const shares = series.map(x=>x.tech_share_pct);
+  const averages = movingAvg(shares,20);
+  const lo = Math.max(0,Math.min(...shares)-3);
+  const hi = Math.min(100,Math.max(...shares)+3);
+  const y = n => (100-(n-lo)/(hi-lo)*100).toFixed(2);
+  const daily = shares.map((n,i)=>`${i+0.5},${y(n)}`).join(" ");
+  const avg = averages.map((n,i)=>n==null?null:`${i+0.5},${y(n)}`).filter(Boolean).join(" ");
+  const dots = series.map((x,i)=>`<circle cx="${i+0.5}" cy="${y(x.tech_share_pct)}" r="0.6">`
+    + `<title>${x.date}: 科技占比 ${x.tech_share_pct.toFixed(2)}%</title></circle>`).join("");
+  $("rotation-chart").innerHTML = `<svg viewBox="0 0 ${series.length} 100" preserveAspectRatio="none" role="img" aria-label="科技成交值占比與20日均線走勢">`
+    + `<polyline class="daily" points="${daily}"></polyline>`
+    + (avg ? `<polyline class="average" points="${avg}"></polyline>` : "")
+    + dots + `</svg>`;
+  $("rotation-note").textContent = us
+    ? `黃線：科技占兩組成交額比例；藍線：20 日均。收盤價×成交量估計；使用目前市值 > $5 億的 Nasdaq 清單及目前產業分類回推歷史。`
+      + `科技含 Technology、Telecommunications；金融、醫療等不納入占比分母。當日行情覆蓋 ${last.coverage_pct.toFixed(1)}%。成交額不代表淨買超。`
+    : `黃線：科技占兩組成交值比例；藍線：20 日均。依目前官方產業分類，金融、生技及其他不納入占比分母。`
+      + `當日行情覆蓋 ${last.coverage_pct.toFixed(1)}%。成交值不代表淨買超。`;
+}
+
 function renderBreadth(){
   const us = tab==="usbreadth";
   const b = (us ? DATA.usbreadth : DATA.breadth) || [];
   const unit = us ? "檔 / 美股" : "檔 / ";
   $("br-title").textContent = us ? "美股動能廣度" : "動能領漲廣度";
   renderMa200();
+  renderRotation();
   if(!b.length){
     $("br-now").textContent = "—";
     $("br-sub").textContent = us
@@ -845,6 +923,7 @@ fetch("./data/latest.json")
   .then(d=>{
     // 合併而非覆蓋 —— 美股是另一支 fetch, 誰先回來不一定, 直接指派會把對方洗掉
     DATA = {...DATA, ...d};
+    DATA.twrotation = d.turnover_rotation || [];
     $("meta").textContent = `${d.trade_date} 收盤 · 全市場 ${d.universe} 檔 · 更新 ${d.updated}`;
     $("cnt-daily").textContent = d.daily.length;
     $("cnt-momentum").textContent = (d.momentum||[]).length;
@@ -869,6 +948,7 @@ fetch("./data/us_latest.json")
     DATA.us = d.picks || [];
     DATA.usbreadth = d.breadth || [];
     DATA.usma200_breadth = d.ma200_breadth || [];
+    DATA.usrotation = d.turnover_rotation || [];
     DATA.us_meta = d;
     $("cnt-us").textContent = DATA.us.length;
     $("cnt-usthemes").textContent = (d.themes||[]).length;
