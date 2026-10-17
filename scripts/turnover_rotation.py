@@ -12,11 +12,12 @@ import pandas as pd
 
 
 TW_TECH = {"24", "25", "26", "27", "28", "29", "30", "31", "34", "36"}
-TW_EXCLUDED = {"17", "20", "22"}  # finance, miscellaneous, biotechnology
+TW_EXCLUDED = {"20"}  # miscellaneous
 US_TECH = {"Technology", "Telecommunications"}
 US_TRADITIONAL = {
     "Consumer Discretionary", "Consumer Staples", "Industrials",
     "Basic Materials", "Energy", "Utilities", "Real Estate",
+    "Finance", "Financials", "Health Care",
 }
 
 

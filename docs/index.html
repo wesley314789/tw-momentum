@@ -166,6 +166,8 @@ tbody tr:hover{background:var(--surface)}
 .rotation-chart .average{stroke:var(--blue,#4c8dff)}
 .rotation-chart circle{fill:var(--amber);opacity:0}
 .rotation-chart circle:hover{opacity:1}
+.rotation-dates{display:flex;justify-content:space-between;gap:4px;color:var(--muted);
+  font:10px var(--mono);margin-top:5px}
 .rotation-note{font-size:11px;color:var(--muted);margin-top:8px}
 
 .badge.new{background:rgba(76,141,255,.18);color:#7aa9ff;border:1px solid rgba(76,141,255,.35)}
@@ -352,6 +354,7 @@ tbody tr:hover{background:var(--surface)}
       <div class="rotation-track" id="rotation-track"></div>
       <div class="br-legend" id="rotation-legend"></div>
       <div class="rotation-chart" id="rotation-chart"></div>
+      <div class="rotation-dates" id="rotation-dates"></div>
       <div class="rotation-note" id="rotation-note"></div>
     </div>
     <h2 class="br-title">每日比較</h2>
@@ -806,10 +809,13 @@ function renderRotation(){
     + `<polyline class="daily" points="${daily}"></polyline>`
     + (avg ? `<polyline class="average" points="${avg}"></polyline>` : "")
     + dots + `</svg>`;
+  const dateIndices = [...new Set([0,.25,.5,.75,1].map(f=>Math.round((series.length-1)*f)))];
+  $("rotation-dates").innerHTML = dateIndices.map(i=>
+    `<span>${series[i].date.slice(5).replace("-","/")}</span>`).join("");
   $("rotation-note").textContent = us
     ? `黃線：科技占兩組成交額比例；藍線：20 日均。收盤價×成交量估計；使用目前市值 > $5 億的 Nasdaq 清單及目前產業分類回推歷史。`
-      + `科技含 Technology、Telecommunications；金融、醫療等不納入占比分母。當日行情覆蓋 ${last.coverage_pct.toFixed(1)}%。成交額不代表淨買超。`
-    : `黃線：科技占兩組成交值比例；藍線：20 日均。依目前官方產業分類，金融、生技及其他不納入占比分母。`
+      + `科技含 Technology、Telecommunications；非科技含金融及 Health Care（不限於生技）。其他及未知類別不納入。當日行情覆蓋 ${last.coverage_pct.toFixed(1)}%。成交額不代表淨買超。`
+    : `黃線：科技占兩組成交值比例；藍線：20 日均。傳產組納入官方金融（17）與生技醫療（22）分類；其他及未知類別不納入。`
       + `當日行情覆蓋 ${last.coverage_pct.toFixed(1)}%。成交值不代表淨買超。`;
 }
 
