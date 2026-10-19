@@ -19,6 +19,19 @@ ROOT = Path(__file__).resolve().parent.parent
 LATEST = ROOT / "docs" / "data" / "gex_latest.json"
 STATE = ROOT / "data" / "gex_telegram_state.json"
 TAIPEI = ZoneInfo("Asia/Taipei")
+LEVEL_ROWS = (
+    ("call_concentration_peak", "Call 集中", "📍"),
+    ("put_concentration_peak", "Put 集中", "📍"),
+    ("gamma_cluster_strike", "最強聚集", "📍"),
+    ("concentration_peak", "集中峰", "📍"),
+    ("concentration_valley", "集中谷", "📍"),
+    ("call_wall", "Call Wall", "⚖️"),
+    ("put_wall", "Put Wall", "⚖️"),
+    ("peak", "山頂", "⚖️"),
+    ("valley", "山谷", "⚖️"),
+    ("micro_flip", "Micro Flip", "⚖️"),
+    ("macro_zero", "Macro Zero", "⚖️"),
+)
 
 
 def number(value):
@@ -65,16 +78,33 @@ def check_snapshot(data, state, today):
             "oi_date": data["date"], "price": number(data["preopen_price"])}
 
 
+def ranked_levels(data, *, demo, basis):
+    """One descending futures-point ladder with the observed price inserted."""
+    anchor = number(data.get("txf_close" if demo else "preopen_price"))
+    if anchor is None:
+        raise ValueError("缺少台指期價格，無法排列 GEX 位階")
+    rows = [(anchor, -1, "☀️ 日盤收盤" if demo else "🌙 夜盤收盤")]
+    if not demo:
+        previous_close = number(data.get("txf_close"))
+        if previous_close is not None:
+            rows.append((previous_close, -2, "☀️ 前次日盤收盤"))
+    missing = []
+    for index, (key, label, model) in enumerate(LEVEL_ROWS):
+        raw = number(data.get(key))
+        if raw is None:
+            missing.append(f"{model} {label} —")
+        else:
+            rows.append((raw + basis, index, f"{model} {label}"))
+    rows.sort(key=lambda row: (-row[0], row[1]))
+    return [f"{price:,.0f}  {label}" for price, _, label in rows], missing
+
+
 def format_message(data, *, demo=False):
-    """Separate direction-free concentration from the signed dealer model."""
+    """Rank all levels while tagging the two models separately."""
     basis = float(data["txf_settle"]) - float(data["F"])
     now = dt.datetime.now(TAIPEI)
     delivery = now.strftime("%H:%M")
     timing = "" if now.time() < dt.time(8, 45) else "（延遲送達）"
-
-    def level(key):
-        value = number(data.get(key))
-        return f"{value + basis:,.0f}" if value is not None else "—"
 
     regime_key = data["regime"] if demo else data["preopen_regime"]
     regime = {"positive": "正 Gamma", "negative": "負 Gamma",
@@ -96,6 +126,7 @@ def format_message(data, *, demo=False):
         date_line = f"盤前交易日：{data['preopen_date']}"
         price_line = f"夜盤收盤 {float(data['preopen_price']):,.0f} 點"
         footer = "盤前狀態依夜盤價格重算；位階仍是上一交易日的 OI 結構。"
+    ladder, missing = ranked_levels(data, demo=demo, basis=basis)
     return "\n".join([
         title,
         date_line,
@@ -105,20 +136,13 @@ def format_message(data, *, demo=False):
         *([] if demo else [f"夜盤實際時段：{data['date']} 15:00～{session_end} 05:00"]),
         "以下位階均換算為台指期點位（沿用前一收盤日基差）。",
         "",
-        "📍 Gamma Concentration（不假設造市商持倉方向）",
-        f"Call 集中 {level('call_concentration_peak')}",
-        f"Put 集中 {level('put_concentration_peak')}",
-        f"最強聚集 {level('gamma_cluster_strike')}",
-        f"集中峰 {level('concentration_peak')}",
-        f"集中谷 {level('concentration_valley')}",
+        "📍 Gamma Concentration：不假設造市商持倉方向",
+        "⚖️ Signed GEX：依賴造市商方向假設",
         "",
-        "⚖️ Signed GEX（造市商方向假設）",
-        f"Call Wall {level('call_wall')}",
-        f"Put Wall {level('put_wall')}",
-        f"山頂 {level('peak')}",
-        f"山谷 {level('valley')}",
-        f"Micro Flip {level('micro_flip')}",
-        f"Macro Zero {level('macro_zero')}",
+        "📊 價格階梯（高 → 低）",
+        *ladder,
+        *(["", "無有效點位：", *missing] if missing else []),
+        "",
         f"{'收盤' if demo else '盤前'}狀態：{regime}",
         f"淨／總 Gamma：{ratio_text}",
         "",

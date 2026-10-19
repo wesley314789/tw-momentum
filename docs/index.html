@@ -12,7 +12,7 @@
   --line:#2b3446; --text:#e9e5da; --muted:#8b93a3;
   --up:#f2564a; --up-dim:rgba(242,86,74,.12);
   --down:#33bd8e; --down-dim:rgba(51,189,142,.12);
-  --amber:#e8b34b;
+  --amber:#e8b34b; --blue:#4c8dff;
   --mono:"IBM Plex Mono",ui-monospace,monospace;
   --sans:"Noto Sans TC",system-ui,sans-serif;
 }
@@ -85,6 +85,12 @@ tbody tr:hover{background:var(--surface)}
 .gex-head h2{font-size:14px;font-weight:700;letter-spacing:.04em}
 .gex-f{font-family:var(--mono);font-size:13px;color:var(--muted)}
 .gex-f b{color:var(--text);font-size:15px}
+.gex-night-badge{display:inline-flex;align-items:center;gap:8px;padding:5px 10px;
+  border:1px solid var(--blue);border-radius:6px;background:var(--surface-2);
+  color:var(--blue);font-size:12px;font-weight:700}
+.gex-night-badge b{font:600 17px var(--mono)}
+.gex-night-badge small{font:11px var(--sans);opacity:.82}
+.gex-night-badge[hidden]{display:none}
 .gex-regime{margin-left:auto;font-family:var(--mono);font-size:12px;
   padding:2px 10px;border-radius:20px;font-weight:600;letter-spacing:.03em}
 .gex-regime.positive{background:var(--down-dim);color:var(--down)}
@@ -102,6 +108,9 @@ tbody tr:hover{background:var(--surface)}
   box-shadow:inset 0 0 0 9999px rgba(232,179,75,.07)}
 .gex-row.mark .lbl{color:var(--amber);font-weight:700}
 .gex-row.mark .px{color:var(--amber)}
+.gex-row.night{background:var(--surface-2);border:1px solid var(--blue);
+  box-shadow:inset 0 0 0 9999px color-mix(in srgb,var(--blue) 8%,transparent)}
+.gex-row.night .lbl,.gex-row.night .px{color:var(--blue);font-weight:700}
 .gex-row.flip{background:transparent;border:1px dashed var(--line)}
 .gex-row.flip .lbl{color:var(--text)}
 .gex-row .sub{font-size:11px;color:var(--muted);margin-left:6px}
@@ -263,7 +272,11 @@ tbody tr:hover{background:var(--surface)}
   <div class="gex-box">
     <div class="gex-head">
       <h2>台指選擇權 Gamma 結構</h2>
-      <span class="gex-f"><span id="gex-price-label">台指期收盤</span> <b id="gex-F"></b></span>
+      <span class="gex-f"><span id="gex-price-label">台指期日盤收盤</span> <b id="gex-F"></b></span>
+      <span class="gex-night-badge" id="gex-night-badge" hidden>
+        <span id="gex-night-label">台指期夜盤收盤</span> <b id="gex-night-value"></b>
+        <small id="gex-night-date"></small>
+      </span>
     </div>
     <div class="gex-model">
       <div class="gex-model-head">
@@ -996,8 +1009,17 @@ fetch("./data/gex_latest.json")
     const nightClose = Number.isFinite(d.preopen_price) ? d.preopen_price :
                        (staleNight ? d.stale_night_price :
                        (Number.isFinite(d.txf_night) ? d.txf_night : null));
-    $("gex-price-label").textContent = pre ? "台指期夜盤收盤" : "台指期收盤";
-    $("gex-F").textContent = fmtPts(pre ? d.preopen_price : dayClose);
+    $("gex-price-label").textContent = "台指期日盤收盤";
+    $("gex-F").textContent = fmtPts(dayClose);
+    $("gex-night-badge").hidden = nightClose == null;
+    $("gex-night-label").textContent = staleNight ? "上次夜盤收盤" : "台指期夜盤收盤";
+    $("gex-night-value").textContent = fmtPts(nightClose);
+    $("gex-night-date").textContent = staleNight ? `${d.stale_night_session_start} 起` :
+      pre ? `${d.preopen_session_start || d.date} 起` : `歸屬 ${d.date}`;
+    $("gex-night-badge").title = nightClose == null ? "" :
+      (staleNight ? `${d.stale_night_session_start} 夜盤，歸屬 ${d.stale_night_date}` :
+       pre ? `${d.preopen_session_start || d.date} 夜盤，歸屬 ${d.preopen_date}` :
+             `歸屬 ${d.date} 交易日的夜盤`);
     const regime = pre ? d.preopen_regime : d.regime;
     const ratio  = pre ? d.preopen_net_ratio : d.net_ratio;
 
@@ -1037,8 +1059,8 @@ fetch("./data/gex_latest.json")
     if (nightClose != null)
       items.push({price:nightClose, label:staleNight ? "上次夜盤收盤（非今早）" : "台指期夜盤收盤",
                   sub:staleNight ? `${d.stale_night_session_start} 15:00 起 · 歸屬 ${d.stale_night_date}` :
-                      (d.preopen_price != null ? `${d.preopen_date} 開盤前` : `${d.date} 交易日夜盤`),
-                  cls:pre?"mark":""});
+                      (d.preopen_price != null ? `${d.preopen_session_start || d.date} 夜盤 · 歸屬 ${d.preopen_date}` : `${d.date} 交易日夜盤`),
+                  cls:"night"});
     if (dayClose != null)
       items.push({price:dayClose, label:"台指期收盤",
                   sub:`${d.date}`, cls:pre?"":"mark"});
@@ -1054,7 +1076,7 @@ fetch("./data/gex_latest.json")
     }).join("");
 
     $("gex-meta").textContent = (pre
-      ? `位階來自 ${d.date}(${d.dow})收盤結算,價格為 ${d.preopen_date} 夜盤收`
+      ? `位階來自 ${d.date}(${d.dow})收盤結算,夜盤始於 ${d.preopen_session_start || d.date} · 歸屬 ${d.preopen_date}`
         + ` · 更新 ${d.updated}`
       : `${d.date}(${d.dow})收盤結算 · 更新 ${d.updated}`)
       + (staleNight ? ` · 今早無新夜盤，沿用 ${d.date} 的位階` : "")

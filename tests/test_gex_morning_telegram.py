@@ -17,6 +17,7 @@ spec.loader.exec_module(alert)
 
 today = date(2026, 10, 2)
 sample = {"date": "2026-10-01", "F": 100., "txf_settle": 102.,
+          "txf_close": 103.,
           "preopen_date": today.isoformat(), "preopen_price": 105.,
           "preopen_gex": 1000., "preopen_net_ratio": .2,
           "preopen_regime": "positive", "call_wall": 110., "put_wall": 90.,
@@ -53,21 +54,30 @@ bad = dict(sample, date=today.isoformat())
 assert alert.check_snapshot(bad, {}, today)["status"] == "error"
 
 message = alert.format_message(sample)
-assert "Call Wall 112" in message  # 110 option strike + 2 futures basis
+assert "112  ⚖️ Call Wall" in message  # 110 option strike + 2 futures basis
 assert "夜盤實際時段：2026-10-01 15:00～2026-10-02 05:00" in message
-assert "Put Wall 92" in message
+assert "92  ⚖️ Put Wall" in message
 assert "Gamma Concentration" in message and "Signed GEX" in message
-assert "山谷 —" in message
+assert "⚖️ 山谷 —" in message
 assert "｜" not in message
-assert "Call 集中 110\nPut 集中 93" in message
-assert "Call Wall 112\nPut Wall 92" in message
-assert "Micro Flip 102\nMacro Zero —" in message
+assert "110  📍 Call 集中" in message
+assert "105  🌙 夜盤收盤" in message
+assert "103  ☀️ 前次日盤收盤" in message
+assert "102  ⚖️ Micro Flip" in message
+assert "⚖️ Macro Zero —" in message
+ladder, missing = alert.ranked_levels(sample, demo=False, basis=2.)
+assert len([line for line in ladder if "夜盤收盤" in line]) == 1
+assert [int(line.split("  ")[0].replace(",", "")) for line in ladder] == sorted(
+    [int(line.split("  ")[0].replace(",", "")) for line in ladder], reverse=True)
+assert len(missing) == 3
+assert "\n".join(ladder) in message
 assert "token" not in message.lower()
 
 demo_sample = dict(sample, txf_close=103., regime="negative", net_ratio=-.3)
 demo_message = alert.format_message(demo_sample, demo=True)
 assert "測試推播" in demo_message and "2026-10-01 收盤資料" in demo_message
 assert "台指期收盤 103 點" in demo_message
+assert "103  ☀️ 日盤收盤" in demo_message
 assert "收盤狀態：負 Gamma" in demo_message
 assert "盤前快照" not in demo_message and "夜盤收盤" not in demo_message
 assert "延遲送達" not in demo_message
