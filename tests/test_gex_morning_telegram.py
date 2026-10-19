@@ -26,6 +26,18 @@ sample = {"date": "2026-10-01", "F": 100., "txf_settle": 102.,
           "concentration_peak": 100., "concentration_valley": None}
 
 assert alert.check_snapshot(sample, {}, today)["status"] == "ready"
+friday_night = dict(sample, date="2026-10-16", preopen_date="2026-10-19",
+                    preopen_session_start="2026-10-16",
+                    preopen_session_end="2026-10-17")
+assert alert.check_snapshot(friday_night, {}, date(2026, 10, 19))["status"] == "ready"
+assert alert.check_snapshot(friday_night, {}, date(2026, 10, 18))["status"] == "skip"
+assert alert.check_snapshot(friday_night,
+                            {"last_sent_preopen_date": "2026-10-19"},
+                            date(2026, 10, 19))["status"] == "quiet"
+assert "夜盤實際時段：2026-10-16 15:00～2026-10-17 05:00" in alert.format_message(friday_night)
+assert "盤前交易日：2026-10-19" in alert.format_message(friday_night)
+bad_session = dict(friday_night, preopen_session_end="2026-10-19")
+assert alert.check_snapshot(bad_session, {}, date(2026, 10, 19))["status"] == "error"
 holiday_snapshot = dict(sample, date="2026-10-08", preopen_date="2026-10-12")
 assert alert.check_snapshot(holiday_snapshot, {}, date(2026, 10, 12))["status"] == "skip"
 assert alert.check_snapshot(sample, {}, date(2026, 10, 3))["status"] == "skip"
@@ -42,7 +54,7 @@ assert alert.check_snapshot(bad, {}, today)["status"] == "error"
 
 message = alert.format_message(sample)
 assert "Call Wall 112" in message  # 110 option strike + 2 futures basis
-assert "夜盤時段：2026-10-01 15:00～2026-10-02 05:00" in message
+assert "夜盤實際時段：2026-10-01 15:00～2026-10-02 05:00" in message
 assert "Put Wall 92" in message
 assert "Gamma Concentration" in message and "Signed GEX" in message
 assert "山谷 —" in message

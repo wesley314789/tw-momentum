@@ -30,7 +30,7 @@ def number(value):
 
 
 def check_snapshot(data, state, today):
-    """Only a new official night close and matching preopen calculation qualify."""
+    """Require the latest valid night session assigned to today's day market."""
     preopen_day = data.get("preopen_date")
     if preopen_day != today.isoformat():
         return {"status": "skip", "reason": "今天沒有新的盤前快照",
@@ -41,11 +41,17 @@ def check_snapshot(data, state, today):
         return {"status": "error", "reason": "OI 日期無效"}
     if oi_day >= today:
         return {"status": "error", "reason": "盤前快照的 OI 日期不合理"}
-    # 期交所的「交易日期」不等於夜盤實際發生日期。週五夜盤會歸到週一，
-    # 連假前夜盤也會歸到下一營業日；這些都不是當天清晨的新行情。
-    if today - oi_day != dt.timedelta(days=1):
+    # 週五夜盤歸屬週一交易日，週一早上仍是最近的盤前價格；其他
+    # 跨休市日維持跳過，避免把連假前的舊價誤當新夜盤。
+    monday_after_friday = (today.weekday() == 0 and oi_day.weekday() == 4
+                           and today - oi_day == dt.timedelta(days=3))
+    if today - oi_day != dt.timedelta(days=1) and not monday_after_friday:
         return {"status": "skip", "reason": "夜盤跨休市日，沒有新的盤前行情",
                 "oi_date": data["date"], "preopen_date": preopen_day}
+    session_end = (oi_day + dt.timedelta(days=1)).isoformat()
+    if (data.get("preopen_session_start", data["date"]) != data["date"] or
+            data.get("preopen_session_end", session_end) != session_end):
+        return {"status": "error", "reason": "夜盤實際時段與 OI 日期不一致"}
     if number(data.get("preopen_price")) is None or number(data.get("preopen_gex")) is None:
         return {"status": "error", "reason": "盤前價格或 GEX 缺漏"}
     settlement, forward = number(data.get("txf_settle")), number(data.get("F"))
@@ -85,7 +91,9 @@ def format_message(data, *, demo=False):
         footer = "這是收盤資料測試訊息，不會占用明早的盤前通知。"
     else:
         title = "🌅 台指期 GEX 盤前快照"
-        date_line = f"快照日期：{data['preopen_date']}"
+        oi_day = dt.date.fromisoformat(data["date"])
+        session_end = data.get("preopen_session_end", (oi_day + dt.timedelta(days=1)).isoformat())
+        date_line = f"盤前交易日：{data['preopen_date']}"
         price_line = f"夜盤收盤 {float(data['preopen_price']):,.0f} 點"
         footer = "盤前狀態依夜盤價格重算；位階仍是上一交易日的 OI 結構。"
     return "\n".join([
@@ -94,7 +102,7 @@ def format_message(data, *, demo=False):
         f"送出時間：{delivery}{'' if demo else timing}",
         price_line,
         f"OI / IV：{data['date']} 收盤",
-        *([] if demo else [f"夜盤時段：{data['date']} 15:00～{data['preopen_date']} 05:00"]),
+        *([] if demo else [f"夜盤實際時段：{data['date']} 15:00～{session_end} 05:00"]),
         "以下位階均換算為台指期點位（沿用前一收盤日基差）。",
         "",
         "📍 Gamma Concentration（不假設造市商持倉方向）",

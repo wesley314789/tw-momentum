@@ -767,7 +767,8 @@ def backfill(start: dt.date, end: dt.date):
 def preopen_snapshot(df: pd.DataFrame, txf: pd.DataFrame,
                      levels_date: str, basis: float | None = None) -> dict:
     """
-    盤前快照:當日夜盤已收(05:00)但日盤還沒開(08:45)時, 用夜盤收盤價重算
+    盤前快照:使用歸屬下一個一般交易日的最近夜盤收盤價重算；
+    週一使用週五開出、週六 05:00 結束的夜盤。
     「現在落在曲線的哪一側」。
 
     位階本身不動 —— 它們是 OI 結構的性質, 而當日 OI 要收盤後才有。這裡重算的
@@ -782,12 +783,15 @@ def preopen_snapshot(df: pd.DataFrame, txf: pd.DataFrame,
         return {}
     row = cand.sort_values("date").iloc[-1]
     price = float(row["txf_night"])
-    # 期交所把前一交易日開出的夜盤歸在「下一交易日」。跨週末／連假時，
-    # 例如 10/08 15:00~10/09 05:00 的行情會歸到 10/12；交易日標籤是
-    # 10/12，不代表週一早上剛有新交易。只有相鄰日才是新盤前快照。
+    # 期交所把夜盤歸到下一個一般交易日。週五夜盤歸屬週一，雖然週六
+    # 清晨就結束，仍是週一開盤前最近一個有效夜盤；保留實際時段供通知標示。
+    # 其他跨休市日（例如週四夜盤歸屬週一）先視為過舊。
     session_start = dt.date.fromisoformat(levels_date)
     assigned_day = dt.date.fromisoformat(row["date"])
-    if assigned_day != session_start + dt.timedelta(days=1):
+    next_day = session_start + dt.timedelta(days=1)
+    monday_after_friday = (session_start.weekday() == 4 and
+                           assigned_day == session_start + dt.timedelta(days=3))
+    if assigned_day != next_day and not monday_after_friday:
         return {
             "stale_night_date": row["date"],
             "stale_night_session_start": levels_date,
@@ -805,6 +809,8 @@ def preopen_snapshot(df: pd.DataFrame, txf: pd.DataFrame,
     ratio = abs(gex) / gross if gross else np.nan
     return {
         "preopen_date": row["date"],
+        "preopen_session_start": levels_date,
+        "preopen_session_end": next_day.isoformat(),
         "preopen_price": price,
         "preopen_gex": gex,
         "preopen_net_ratio": ratio,

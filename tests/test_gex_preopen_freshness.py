@@ -34,5 +34,20 @@ assert fresh["preopen_date"] == "2026-10-13"
 assert fresh["preopen_price"] == 49100.0
 assert fresh["preopen_regime"] in {"positive", "negative", "neutral"}
 assert "stale_night_date" not in fresh
+assert fresh["preopen_session_start"] == "2026-10-12"
+assert fresh["preopen_session_end"] == "2026-10-13"
+
+# Friday's night session closes Saturday at 05:00, but TAIFEX assigns it to
+# Monday's day session. It remains the latest price for Monday preopen.
+friday_night = pd.DataFrame([{"date": "2026-10-19", "txf_night": 46289.0}])
+with patch.object(g, "build_chain", return_value=(chain, 49000.0)):
+    monday = g.preopen_snapshot(
+        pd.DataFrame({"_trade_date": [dt.date(2026, 10, 16)]}),
+        friday_night, "2026-10-16", 200.0)
+assert monday["preopen_date"] == "2026-10-19"
+assert monday["preopen_session_start"] == "2026-10-16"
+assert monday["preopen_session_end"] == "2026-10-17"
+assert monday["preopen_price"] == 46289.0
+assert "stale_night_date" not in monday
 
 print("GEX preopen freshness checks passed")
