@@ -151,6 +151,40 @@ def format_message(data, *, demo=False):
     ])
 
 
+def historical_night_demo():
+    """Rebuild the last completed night snapshot without touching alert state."""
+    import pandas as pd
+    import txo_gex as gex
+
+    history = pd.read_csv(ROOT / "data" / "gex_history.csv").sort_values("date")
+    nights = history.index[history["txf_night"].notna()]
+    if len(nights) == 0:
+        raise ValueError("歷史資料沒有可用夜盤收盤價")
+    night_row = history.loc[nights[-1]]
+    oi_day = gex.dt.date.fromisoformat(str(night_row["date"]))
+    previous = history[history["date"] < night_row["date"]]
+    if previous.empty:
+        raise ValueError("夜盤前一交易日的 OI 資料不存在")
+    levels = previous.iloc[-1]
+    levels_day = gex.dt.date.fromisoformat(str(levels["date"]))
+    basis = number(levels["txf_settle"]) - number(levels["F"])
+    txf = pd.DataFrame([{"date": night_row["date"],
+                         "txf_night": night_row["txf_night"]}])
+    raw = gex.fetch_range(levels_day, levels_day)
+    snapshot = gex.preopen_snapshot(gex.prepare(raw), txf, str(levels_day), basis)
+    if snapshot.get("preopen_date") != oi_day.isoformat():
+        raise ValueError("無法重建對應夜盤的 GEX 快照")
+    data = levels.to_dict()
+    data.update(snapshot)
+    message = format_message(data)
+    message = message.replace("🌅 台指期 GEX 盤前快照", "🧪 GEX 夜盤排版測試（歷史資料）", 1)
+    message = message.replace("（延遲送達）", "")
+    message += "\n這是歷史排版測試，非今日即時訊號；不占用正式早報紀錄。"
+    return message, {"status": "night_demo_sent", "oi_date": str(levels_day),
+                     "night_session_end": snapshot["preopen_session_end"],
+                     "assigned_date": snapshot["preopen_date"]}
+
+
 def send_message(token, chat_id, message):
     import requests
 
@@ -189,10 +223,19 @@ def main():
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--send", action="store_true", help="正式發送，預設只預覽")
     mode.add_argument("--demo", action="store_true", help="立即發送收盤資料測試訊息，不記錄為盤前通知")
+    mode.add_argument("--night-demo", action="store_true", help="用最近已完成夜盤資料測試排版，不記錄為盤前通知")
     args = parser.parse_args()
     try:
         data = json.loads(LATEST.read_text(encoding="utf-8"))
-        if args.demo:
+        if args.night_demo:
+            token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+            chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
+            if not token or not chat_id:
+                result = {"status": "error", "reason": "Telegram Secrets 尚未設定"}
+            else:
+                message, result = historical_night_demo()
+                send_message(token, chat_id, message)
+        elif args.demo:
             token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
             chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
             if not token or not chat_id:
