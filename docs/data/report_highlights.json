@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "days": [
+    {
+      "date": "2026-10-19",
+      "scan": {"changed": 21, "complete": 7, "partial": 5, "cumulative": 193},
+      "items": [
+        {
+          "title": "啓碁展示 AI 資料中心網通方案",
+          "fact": "啓碁於 OCP Global Summit 展示全光交換器、800G 光收發器與 1.6TbE 交換器，其中 NPO 方案對應 102.4Tbps 交換容量。",
+          "source_name": "啓碁公司新聞（2026-10-06）",
+          "source_url": "https://www.wnc.com.tw/news/wnc-keyai-infrastructure-technologies/detail"
+        },
+        {
+          "title": "金居決議增資馬來西亞子公司",
+          "fact": "金居公告，董事會決議對檳城全資子公司辦理增資，預計投資新台幣 14 億元，作為擴充海外生產據點。",
+          "source_name": "公開資訊觀測站重大訊息轉載（2026-10-16）",
+          "source_url": "https://www.moneydj.com/kmdj/news/newsviewer.aspx?a=7ff1abc6-d5f2-4b4a-af81-15f00a8cb07d&c=MB06"
+        },
+        {
+          "title": "TE 展示新一代光電互連",
+          "fact": "TE Connectivity 在 OCP Global Summit 展示 224G 至 448G 互連技術，以及支援近封裝光學引擎的模組化插座。",
+          "source_name": "TE Connectivity 公司新聞",
+          "source_url": "https://www.te.com/en/about-te/news-center/ocp-2026.html"
+        }
+      ]
+    },
+    {
+      "date": "2026-10-18",
+      "scan": {"changed": 0, "complete": 7, "partial": 1, "cumulative": 186},
+      "items": [
+        {
+          "title": "臻鼎展示 1.6T 光模組與 AI 伺服器板",
+          "fact": "臻鼎在 SEMICON Taiwan 2026 展出 1.6T 光模組及最高 34 層的 AI Server 高階板。",
+          "source_name": "臻鼎公司新聞（2026-09-02）",
+          "source_url": "https://www.zdtco.com/public/tw/news"
+        },
+        {
+          "title": "SpaceX 簽訂 800 MHz 頻譜收購協議",
+          "fact": "Grain Management 公告與 SpaceX 簽訂其全美 800 MHz 頻譜組合的出售協議；交易仍須取得 FCC 核准。",
+          "source_name": "Grain Management 公告（2026-10-08）",
+          "source_url": "https://www.prnewswire.com/news-releases/grain-management-announces-definitive-agreement-to-sell-nationwide-800-mhz-spectrum-portfolio-to-spacex-302902974.html"
+        }
+      ]
+    }
+  ]
+}

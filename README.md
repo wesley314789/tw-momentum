@@ -38,6 +38,8 @@ scripts/validate_gex.py     GEX 位階的預測力驗證(可重跑,結論見上�
 scripts/probe_taifex.py     期交所資料發布時間探測(手動用,結果已寫在檔案開頭)
 .github/workflows/daily.yml 每日排程(兩條管線都跑,互不阻擋)
 docs/index.html             前端頁面
+docs/reports.html           公開查證的每日報告重點頁
+docs/data/report_highlights.json  只含公開來源可核實的短重點與閱讀進度
 docs/data/latest.json       個股計算結果(自動產生)
 docs/data/gex_latest.json   最新一天 GEX 位階(自動產生)
 data/history.csv.gz         滾動 280 個交易日的個股歷史資料(自動維護)
@@ -50,6 +52,8 @@ scripts/breakout.py         台股 Breakout Watchlist／Fresh Breakout（獨立�
 data/us_breadth.csv         美股每日通過檔數(自動維護)
 docs/data/us_latest.json    美股篩選結果與廣度序列(自動產生)
 ```
+
+`docs/reports.html` 只展示公開查證過的事實及原始來源連結。私人報告原檔、擷取全文、未核實的研究預估與完整閱讀筆記留在 Git 忽略的 `refs/reports/`。每天的閱讀排程確認公開來源後更新 `docs/data/report_highlights.json`；沒有新發現時仍新增當天進度，`items` 留空。
 
 ## 篩選邏輯
 

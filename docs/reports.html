@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>公開報告重點｜台股強勢股掃描</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#141922;--surface:#1b212d;--line:#2b3446;--text:#e9e5da;--muted:#a3aab7;--amber:#e8b34b;--green:#33bd8e;--mono:"IBM Plex Mono",ui-monospace,monospace;--sans:"Noto Sans TC",system-ui,sans-serif}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.7 var(--sans);-webkit-font-smoothing:antialiased}
+a{color:var(--amber);text-underline-offset:3px}
+a:focus-visible{outline:2px solid var(--amber);outline-offset:3px}
+.shell{max-width:920px;margin:auto;padding:28px 24px 72px}
+.back{font-size:13px;text-decoration:none}
+header{padding:24px 0 18px;border-bottom:1px solid var(--line)}
+h1{font-size:25px;line-height:1.35;margin:10px 0 8px}
+h1 span{color:var(--amber)}
+.intro{color:var(--muted);max-width:690px;margin:0}
+.day{margin-top:28px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:20px 22px}
+.day-head{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
+h2{font:600 18px var(--mono);margin:0}
+.counts{color:var(--muted);font-size:12px}
+.items{display:grid;gap:12px;margin-top:16px}
+.item{padding:14px 16px;border-left:3px solid var(--green);background:rgba(51,189,142,.055);border-radius:0 7px 7px 0}
+.item h3{font-size:15px;margin:0 0 5px}
+.item p{margin:0 0 5px}
+.item .source{font-size:12px;color:var(--muted)}
+.none{color:var(--muted);padding:14px 0 2px}
+.error{padding:24px 0;color:var(--muted)}
+footer{border-top:1px solid var(--line);margin-top:40px;padding-top:14px;color:var(--muted);font-size:12px}
+@media(max-width:620px){.shell{padding:20px 16px 48px}.day{padding:16px}}
+</style>
+</head>
+<body>
+<div class="shell">
+  <a class="back" href="./index.html">← 回強勢股掃描</a>
+  <header>
+    <h1>公開<span>報告重點</span></h1>
+    <p class="intro">每日報告閱讀後，只列出能用公司公告或其他公開來源核對的事實。這裡沒有報告原檔、付費研究內文、未核實的客戶或獲利預估；完整私人閱讀筆記留在本機。</p>
+  </header>
+  <main id="days" aria-live="polite"><p class="error">載入中…</p></main>
+  <footer>公開來源的連結會開啟原始公告；產品展示不代表已量產或產生營收。</footer>
+</div>
+<script>
+const root=document.getElementById("days");
+function node(tag,cls,content){const el=document.createElement(tag);if(cls)el.className=cls;if(content!==undefined)el.textContent=content;return el}
+fetch("./data/report_highlights.json",{cache:"no-store"}).then(r=>{if(!r.ok)throw Error("HTTP "+r.status);return r.json()}).then(data=>{
+  root.replaceChildren();
+  for(const day of data.days||[]){
+    const box=node("section","day");const head=node("div","day-head");
+    head.append(node("h2","",day.date));
+    const s=day.scan||{};
+    head.append(node("span","counts",`新增／變更 ${s.changed??0} · 完整讀完 ${s.complete??0} · 部分閱讀 ${s.partial??0} · 累計 ${s.cumulative??0}`));
+    box.append(head);
+    if(!day.items?.length){box.append(node("p","none","今天沒有新增的公開核實重點。"))}
+    else{
+      const list=node("div","items");
+      for(const item of day.items){
+        const card=node("article","item");card.append(node("h3","",item.title));card.append(node("p","",item.fact));
+        const src=node("div","source");src.append("公開來源：");
+        try{const url=new URL(item.source_url);if(url.protocol==="https:"){
+          const link=node("a","",item.source_name);link.href=url.href;link.target="_blank";link.rel="noopener noreferrer";src.append(link)
+        }}catch(_e){}
+        card.append(src);list.append(card);
+      }
+      box.append(list);
+    }
+    root.append(box);
+  }
+  if(!root.children.length)root.append(node("p","error","尚無公開核實重點。"));
+}).catch(()=>{root.replaceChildren(node("p","error","暫時無法載入報告重點，請稍後再試。"))});
+</script>
+</body>
+</html>
