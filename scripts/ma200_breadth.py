@@ -18,12 +18,19 @@ except ModuleNotFoundError:
 
 ROOT = Path(__file__).resolve().parent.parent
 PATH = ROOT / "data" / "ma200_breadth.csv"
+PATH60 = ROOT / "data" / "ma60_breadth.csv"
 COLS = ["date", "count", "eligible", "pct"]
 
 
 def load() -> pd.DataFrame:
     if PATH.exists():
         return pd.read_csv(PATH, dtype={"date": str})[COLS]
+    return pd.DataFrame(columns=COLS)
+
+
+def load60() -> pd.DataFrame:
+    if PATH60.exists():
+        return pd.read_csv(PATH60, dtype={"date": str})[COLS]
     return pd.DataFrame(columns=COLS)
 
 
@@ -37,17 +44,47 @@ def calculate(history: pd.DataFrame, actions: pd.DataFrame) -> pd.DataFrame:
     return p.reset_index(drop=True)
 
 
+def calculate60(history: pd.DataFrame, actions: pd.DataFrame) -> pd.DataFrame:
+    """Use the same adjusted-price 60MA rule as the market risk alert."""
+    p = market_risk_alert.participation(history, actions, True, window=60)
+    p = p[p["eligible"] > 0].rename(columns={"above": "count", "pct60": "pct"})
+    p = p[COLS].copy()
+    p["pct"] = p["pct"].round(2)
+    return p.reset_index(drop=True)
+
+
+def history_for_backfill(history: pd.DataFrame) -> pd.DataFrame:
+    long_path = ROOT / "data" / "history_long.csv.gz"
+    if long_path.exists():
+        older = pd.read_csv(long_path, dtype={"code": str})
+        history = pd.concat([older, history], ignore_index=True).drop_duplicates(
+            ["date", "code"], keep="last")
+        # Enough overlap for 200 prior sessions plus 240 comparison days.
+        keep = sorted(history["date"].unique())[-440:]
+        history = history[history["date"].isin(keep)]
+    return history
+
+
+def save_series(fresh: pd.DataFrame, previous: pd.DataFrame,
+                path: Path, backfill: bool) -> pd.DataFrame:
+    latest = str(fresh["date"].iloc[-1])
+    if backfill:
+        combined = fresh
+    else:
+        additions = fresh[~fresh["date"].isin(previous["date"]) |
+                          fresh["date"].eq(latest)]
+        combined = pd.concat([previous, additions], ignore_index=True).drop_duplicates(
+            "date", keep="last").sort_values("date")
+    combined = combined.tail(280).reset_index(drop=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    combined.to_csv(path, index=False, encoding="utf-8", float_format="%.2f")
+    return combined
+
+
 def update(history: pd.DataFrame, backfill: bool = False) -> tuple[pd.DataFrame, str]:
     """Append missing dates without rewriting older points from a shorter window."""
     if backfill:
-        long_path = ROOT / "data" / "history_long.csv.gz"
-        if long_path.exists():
-            older = pd.read_csv(long_path, dtype={"code": str})
-            history = pd.concat([older, history], ignore_index=True).drop_duplicates(
-                ["date", "code"], keep="last")
-            # Enough overlap for 200 prior sessions plus 240 comparison days.
-            keep = sorted(history["date"].unique())[-440:]
-            history = history[history["date"].isin(keep)]
+        history = history_for_backfill(history)
 
     latest = str(history["date"].max())
     actions, meta = market_risk_alert.load_actions(ROOT / "data", latest, True)
@@ -55,30 +92,30 @@ def update(history: pd.DataFrame, backfill: bool = False) -> tuple[pd.DataFrame,
     if fresh.empty or str(fresh["date"].iloc[-1]) != latest:
         raise ValueError("No eligible 200MA breadth for latest trading date")
 
-    previous = load()
+    # Today's 280-session snapshot has less warmup history for prior dates
+    # than the snapshot available on those dates. Keep earlier results.
+    return save_series(fresh, load(), PATH, backfill), meta.get("end", "")
+
+
+def update60(history: pd.DataFrame, backfill: bool = False) -> tuple[pd.DataFrame, str]:
     if backfill:
-        combined = fresh
-    else:
-        # Today's 280-session snapshot has less warmup history for prior dates
-        # than the snapshot available on those dates. Keep existing results;
-        # refresh only the latest date, e.g. after a new corporate action.
-        additions = fresh[~fresh["date"].isin(previous["date"]) |
-                          fresh["date"].eq(latest)]
-        combined = pd.concat([previous, additions], ignore_index=True).drop_duplicates(
-            "date", keep="last").sort_values("date")
-    combined = combined.tail(280).reset_index(drop=True)
-    PATH.parent.mkdir(parents=True, exist_ok=True)
-    combined.to_csv(PATH, index=False, encoding="utf-8", float_format="%.2f")
-    return combined, meta.get("end", "")
+        history = history_for_backfill(history)
+    latest = str(history["date"].max())
+    actions, meta = market_risk_alert.load_actions(ROOT / "data", latest, True)
+    fresh = calculate60(history, actions)
+    if fresh.empty or str(fresh["date"].iloc[-1]) != latest:
+        raise ValueError("No eligible 60MA breadth for latest trading date")
+    return save_series(fresh, load60(), PATH60, backfill), meta.get("end", "")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--backfill", action="store_true",
                         help="Use the local long history, if available, to seed past dates")
+    parser.add_argument("--ma60", action="store_true", help="Update the 60MA breadth instead")
     args = parser.parse_args()
     history = pd.read_csv(ROOT / "data" / "history.csv.gz", dtype={"code": str})
-    series, through = update(history, backfill=args.backfill)
+    series, through = (update60 if args.ma60 else update)(history, backfill=args.backfill)
     print(json.dumps({"date": series.date.iloc[-1],
                       "count": int(series["count"].iloc[-1]),
                       "eligible": int(series.eligible.iloc[-1]),

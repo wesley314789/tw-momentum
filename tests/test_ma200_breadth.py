@@ -32,6 +32,11 @@ class Ma200BreadthTest(unittest.TestCase):
         self.assertEqual(got.date.iloc[0], days[200])
         self.assertEqual(len(got), 2)
         self.assertEqual(got.iloc[-1][["count", "eligible", "pct"]].tolist(), [1, 2, 50.0])
+        short = ma200_breadth.calculate60(hist, actions)
+        self.assertEqual(short.iloc[-1][["count", "eligible", "pct"]].tolist(), [1, 2, 50.0])
+        risk = market_risk_alert.participation(hist, actions, True)
+        self.assertEqual(int(short.iloc[-1]["count"]), int(risk.iloc[-1]["above"]))
+        self.assertEqual(int(short.iloc[-1]["eligible"]), int(risk.iloc[-1]["eligible"]))
         json.dumps(got.to_dict("records"), allow_nan=False)
 
     def test_ex_dividend_adjustment(self):

@@ -938,6 +938,24 @@ def enrich_and_write(merged: pd.DataFrame, idx_hist: pd.DataFrame | None = None)
     except Exception as e:
         print(f"200MA 市場廣度計算失敗({e.__class__.__name__}): {e}")
         result["ma200_breadth"] = []
+    try:
+        ma60, actions_through = ma200_breadth.update60(merged)
+        result["ma60_breadth"] = ma60.tail(120).to_dict("records")
+        result["ma60_actions_through"] = actions_through
+    except Exception as e:
+        print(f"60MA 市場廣度計算失敗({e.__class__.__name__}): {e}")
+        result["ma60_breadth"] = []
+    try:
+        try:
+            import high_low_breadth
+        except ModuleNotFoundError:
+            from scripts import high_low_breadth
+        high_low, actions_through = high_low_breadth.update(merged)
+        result["high_low_breadth"] = high_low.tail(120).to_dict("records")
+        result["high_low_actions_through"] = actions_through
+    except Exception as e:
+        print(f"52週新高新低廣度計算失敗({e.__class__.__name__}): {e}")
+        result["high_low_breadth"] = []
 
     write_result(result)
     print(f"完成:{result['trade_date']} | 全市場 {result['universe']} 檔 | "

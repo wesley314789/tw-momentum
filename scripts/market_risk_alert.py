@@ -19,7 +19,8 @@ ROOT = Path(__file__).resolve().parent.parent
 STATE = ROOT / "data" / "market_risk_alert_state.json"
 
 
-def participation(history, actions, adjusted, window=60, max_universe_days=None):
+def price_history(history, actions, adjusted):
+    """Share the risk alert's ex-date adjustment and unmatched-event guard."""
     h = history.sort_values(["code", "date"]).drop_duplicates(
         ["code", "date"], keep="last"
     ).copy()
@@ -39,6 +40,11 @@ def participation(history, actions, adjusted, window=60, max_universe_days=None)
     else:
         h["price"] = h.close
         unmatched = pd.Series(False, index=h.index)
+    return h, unmatched
+
+
+def participation(history, actions, adjusted, window=60, max_universe_days=None):
+    h, unmatched = price_history(history, actions, adjusted)
     g = h.groupby("code", sort=False)
     ma = g.price.transform(lambda s: s.rolling(window, min_periods=window).mean())
     jumps = g.price.pct_change().abs().gt(.105).fillna(False) | unmatched

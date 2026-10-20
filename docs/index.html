@@ -160,13 +160,26 @@ tbody tr:hover{background:var(--surface)}
 .br-title{font-size:14px;margin-top:16px}
 .ma200-block{margin-top:24px;padding-top:16px;border-top:1px solid var(--line)}
 .ma200-block .br-head{padding-top:8px}
+.trend-values{display:flex;gap:28px;flex-wrap:wrap}
+.trend-label{font-size:12px;color:var(--muted);margin-bottom:5px}
 .ma200-chart{height:130px;border-bottom:1px solid var(--line)}
 .ma200-chart svg{display:block;width:100%;height:100%}
 .ma200-chart .mid{stroke:var(--line);stroke-width:1;vector-effect:non-scaling-stroke}
 .ma200-chart .series{fill:none;stroke:var(--up);stroke-width:2;
   stroke-linejoin:round;vector-effect:non-scaling-stroke}
+.ma200-chart .series.short{stroke:var(--blue)}
 .ma200-chart circle{fill:var(--up);opacity:0}
 .ma200-chart circle:hover{opacity:1}
+.high-low-block{margin-top:24px;padding-top:16px;border-top:1px solid var(--line)}
+.high-low-values{display:flex;gap:28px;flex-wrap:wrap;padding:12px 0}
+.high-low-values .br-now{font-size:28px}
+.high-low-chart{height:130px;border-bottom:1px solid var(--line)}
+.high-low-chart svg{display:block;width:100%;height:100%}
+.high-low-chart .series{fill:none;stroke-width:2;vector-effect:non-scaling-stroke}
+.high-low-chart .high{stroke:var(--up)}
+.high-low-chart .low{stroke:var(--down)}
+.high-low-chart circle{opacity:0}
+.high-low-chart circle:hover{opacity:1}
 .rotation-block{margin-top:24px;padding-top:16px;border-top:1px solid var(--line)}
 .rotation-track{display:flex;height:12px;border-radius:6px;overflow:hidden;background:var(--surface-2);margin:12px 0 8px}
 .rotation-tech{background:var(--amber)}
@@ -348,16 +361,35 @@ tbody tr:hover{background:var(--surface)}
     <div class="br-chart" id="br-chart"></div>
     <div class="br-legend" id="br-legend"></div>
     <div class="ma200-block" id="ma200-block" hidden>
-      <h2 class="br-title" id="ma200-title">全市場趨勢廣度 · 站上 200MA</h2>
+      <h2 class="br-title" id="ma200-title">全市場趨勢廣度 · 60MA／200MA</h2>
       <div class="br-head">
-        <div>
-          <div class="br-now" id="ma200-now"></div>
-          <div class="br-sub" id="ma200-sub"></div>
+        <div class="trend-values">
+          <div id="ma60-value" hidden>
+            <div class="trend-label">站上 60MA</div>
+            <div class="br-now" id="ma60-now"></div>
+          </div>
+          <div>
+            <div class="trend-label">站上 200MA</div>
+            <div class="br-now" id="ma200-now"></div>
+          </div>
         </div>
         <div class="br-stats" id="ma200-stats"></div>
       </div>
+      <div class="br-sub" id="ma200-sub"></div>
       <div class="ma200-chart" id="ma200-chart"></div>
       <div class="br-legend" id="ma200-legend">紅線：站上各自 200 日均線的比例 · 每檔股票等權計算</div>
+    </div>
+    <div class="high-low-block" id="high-low-block" hidden>
+      <h2 class="br-title">52 週收盤新高／新低</h2>
+      <div class="high-low-values">
+        <div><div class="trend-label">新高家數</div><div class="br-now" id="high-low-high"></div></div>
+        <div><div class="trend-label">新低家數</div><div class="br-now" id="high-low-low"></div></div>
+        <div><div class="trend-label">新高－新低</div><div class="br-now" id="high-low-net"></div></div>
+      </div>
+      <div class="br-sub" id="high-low-sub"></div>
+      <div class="high-low-chart" id="high-low-chart"></div>
+      <div class="br-legend"><span><s style="background:var(--up)"></s>收盤新高家數</span>
+        <span><s style="background:var(--down)"></s>收盤新低家數</span></div>
     </div>
     <div class="rotation-block" id="rotation-block" hidden>
       <h2 class="br-title" id="rotation-title">科技／傳產成交值輪動</h2>
@@ -432,7 +464,7 @@ const COLS_US = [
   {k:"days",   label:"上榜", num:true},
 ];
 
-let DATA = {daily:[], momentum:[], breakout_watchlist:[], fresh_breakout:[], breadth:[], ma200_breadth:[], twrotation:[], us:[], usbreadth:[], usma200_breadth:[], usrotation:[]};
+let DATA = {daily:[], momentum:[], breakout_watchlist:[], fresh_breakout:[], breadth:[], ma60_breadth:[], ma200_breadth:[], high_low_breadth:[], twrotation:[], us:[], usbreadth:[], usma200_breadth:[], usrotation:[]};
 let tab = "daily";
 let sortKey = "chg_pct", sortDir = -1;
 const sectorOpen = new Set();
@@ -755,31 +787,87 @@ function renderMa200(){
   const prev = series.length > 1 ? series[series.length-2] : null;
   const change = prev ? last.pct - prev.pct : null;
   $("ma200-now").innerHTML = `${last.pct.toFixed(2)}%<small>${last.count} / ${last.eligible} 檔</small>`;
-  $("ma200-title").textContent = us ? "美股趨勢廣度 · 站上 200MA" : "全市場趨勢廣度 · 站上 200MA";
+  $("ma200-title").textContent = us ? "美股趨勢廣度 · 站上 200MA" : "全市場趨勢廣度 · 60MA／200MA";
+  const short = (DATA.ma60_breadth || []).filter(x=>x.eligible > 0 && Number.isFinite(x.pct));
+  const shortMap = new Map(short.map(x=>[x.date,x]));
+  const shortLast = us ? null : shortMap.get(last.date);
+  const shortIndex = shortLast ? short.findIndex(x=>x.date===last.date) : -1;
+  const shortPrev = shortIndex > 0 ? short[shortIndex-1] : null;
+  $("ma60-value").hidden = !shortLast;
+  if(shortLast) $("ma60-now").innerHTML = `${shortLast.pct.toFixed(2)}%<small>${shortLast.count} / ${shortLast.eligible} 檔</small>`;
   if(us){
     $("ma200-sub").textContent = `${last.date} · 市值 > $5 億`
       + (last.coverage_pct != null ? ` · 行情取得 ${last.coverage_pct.toFixed(1)}%` : "");
     $("ma200-legend").textContent = "紅線：站上各自 200 日均線的比例 · 等權計算；無當日股票清單的歷史日期以現今清單回推，含倖存者偏差";
   }else{
-    const actionsThrough = DATA.ma200_actions_through;
+    const actionsThrough = DATA.ma60_actions_through || DATA.ma200_actions_through;
     $("ma200-sub").textContent = `${last.date} · 使用已知除權息校正價格`
       + (actionsThrough && actionsThrough < last.date ? ` · 校正資料截至 ${actionsThrough}` : "");
-    $("ma200-legend").textContent = "紅線：站上各自 200 日均線的比例 · 每檔股票等權計算";
+    $("ma200-legend").innerHTML = `<span><s style="background:var(--blue)"></s>站上 60MA</span>`
+      + `<span><s style="background:var(--up)"></s>站上 200MA</span>`
+      + `<span>每檔股票等權計算</span>`;
   }
-  $("ma200-stats").innerHTML = [
-    ["對前日", change==null ? "—" : `${change>=0?"+":""}${change.toFixed(2)}pp`],
+  const pp = v => v==null ? "—" : `${v>=0?"+":""}${v.toFixed(2)}pp`;
+  const stats = us ? [
+    ["對前日", pp(change)],
     ["近段最高", `${Math.max(...series.map(x=>x.pct)).toFixed(1)}%`],
     ["近段最低", `${Math.min(...series.map(x=>x.pct)).toFixed(1)}%`],
-  ].map(([k,v])=>`<div class="br-stat"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
+  ] : [
+    ["60MA 對前日", pp(shortLast && shortPrev ? shortLast.pct-shortPrev.pct : null)],
+    ["200MA 對前日", pp(change)],
+    ["60MA－200MA", pp(shortLast ? shortLast.pct-last.pct : null)],
+  ];
+  $("ma200-stats").innerHTML = stats.map(([k,v])=>`<div class="br-stat"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
 
   const pts = series.map((x,i)=>`${i+0.5},${(100-x.pct).toFixed(2)}`).join(" ");
   const dots = series.map((x,i)=>
     `<circle cx="${i+0.5}" cy="${(100-x.pct).toFixed(2)}" r="0.45">`
-    + `<title>${x.date}: ${x.pct.toFixed(2)}% (${x.count}/${x.eligible})</title></circle>`
+    + `<title>${x.date} 200MA: ${x.pct.toFixed(2)}% (${x.count}/${x.eligible})</title></circle>`
   ).join("");
-  $("ma200-chart").innerHTML = `<svg viewBox="0 0 ${series.length} 100" preserveAspectRatio="none" role="img" aria-label="站上200日均線的股票比例走勢">`
+  const shortSegments = [];
+  let segment = [];
+  series.forEach((x,i)=>{
+    const s = shortMap.get(x.date);
+    if(!us && s){segment.push(`${i+0.5},${(100-s.pct).toFixed(2)}`);}
+    else if(segment.length){shortSegments.push(segment); segment=[];}
+  });
+  if(segment.length) shortSegments.push(segment);
+  const shortLines = shortSegments.map(points=>
+    `<polyline class="series short" points="${points.join(" ")}"></polyline>`).join("");
+  const shortDots = us ? "" : series.map((x,i)=>{
+    const s = shortMap.get(x.date);
+    return s ? `<circle cx="${i+0.5}" cy="${(100-s.pct).toFixed(2)}" r="0.45">`
+      + `<title>${x.date} 60MA: ${s.pct.toFixed(2)}% (${s.count}/${s.eligible})</title></circle>` : "";
+  }).join("");
+  $("ma200-chart").innerHTML = `<svg viewBox="0 0 ${series.length} 100" preserveAspectRatio="none" role="img" aria-label="${us ? "站上200日均線" : "站上60日及200日均線"}的股票比例走勢">`
     + `<line class="mid" x1="0" y1="50" x2="${series.length}" y2="50"></line>`
-    + `<polyline class="series" points="${pts}"></polyline>${dots}</svg>`;
+    + `<polyline class="series" points="${pts}"></polyline>${shortLines}${dots}${shortDots}</svg>`;
+}
+
+function renderHighLow(){
+  const box = $("high-low-block");
+  const series = (DATA.high_low_breadth || []).filter(x=>
+    x.eligible > 0 && Number.isFinite(x.new_high) && Number.isFinite(x.new_low));
+  box.hidden = tab !== "breadth" || !series.length;
+  if(box.hidden) return;
+  const last = series[series.length-1];
+  const net = last.new_high-last.new_low;
+  $("high-low-high").textContent = last.new_high.toLocaleString("zh-TW");
+  $("high-low-low").textContent = last.new_low.toLocaleString("zh-TW");
+  $("high-low-net").textContent = `${net>0?"+":""}${net.toLocaleString("zh-TW")}`;
+  const through = DATA.high_low_actions_through;
+  $("high-low-sub").textContent = `${last.date} · ${last.eligible} 檔可評估 · 收盤價嚴格突破先前 251 個交易日的收盤高／低`
+    + (through && through < last.date ? ` · 除權息校正截至 ${through}` : "");
+  const top = Math.max(1, ...series.map(x=>Math.max(x.new_high,x.new_low)));
+  const y = value => (100-value/top*96).toFixed(2);
+  const line = (key,label,cls)=>{
+    const pts = series.map((x,i)=>`${i+0.5},${y(x[key])}`).join(" ");
+    const dots = series.map((x,i)=>`<circle cx="${i+0.5}" cy="${y(x[key])}" r="0.45">`
+      + `<title>${x.date} ${label}: ${x[key]} / ${x.eligible} 檔</title></circle>`).join("");
+    return `<polyline class="series ${cls}" points="${pts}"></polyline>${dots}`;
+  };
+  $("high-low-chart").innerHTML = `<svg viewBox="0 0 ${series.length} 100" preserveAspectRatio="none" role="img" aria-label="52週收盤新高與新低家數走勢">`
+    + line("new_high","新高","high") + line("new_low","新低","low") + `</svg>`;
 }
 
 function renderRotation(){
@@ -842,6 +930,7 @@ function renderBreadth(){
   const unit = us ? "檔 / 美股" : "檔 / ";
   $("br-title").textContent = us ? "美股動能廣度" : "動能領漲廣度";
   renderMa200();
+  renderHighLow();
   renderRotation();
   if(!b.length){
     $("br-now").textContent = "—";
@@ -895,8 +984,12 @@ function renderBreadth(){
     + averages.map(s=>`<span><s style="background:${s.color}"></s>${s.n} 日移動平均</span>`).join("");
 
   const ma200ByDate = new Map(((us ? DATA.usma200_breadth : DATA.ma200_breadth) || []).map(x=>[x.date,x]));
-  $("br-thead").innerHTML = ["日期", "通過檔數", "佔全市場", "對前日", "10MA", "20MA",
-    "站上200MA", "200MA檔數", ""].map(x=>`<th>${x}</th>`).join("");
+  const ma60ByDate = new Map((DATA.ma60_breadth || []).map(x=>[x.date,x]));
+  const highLowByDate = new Map((DATA.high_low_breadth || []).map(x=>[x.date,x]));
+  const headers = ["日期", "通過檔數", "佔全市場", "對前日", "10MA", "20MA",
+    ...(us ? [] : ["站上60MA"]), "站上200MA", "200MA檔數",
+    ...(us ? [] : ["52週新高", "52週新低"]), ""];
+  $("br-thead").innerHTML = headers.map(x=>`<th>${x}</th>`).join("");
   $("br-tbody").innerHTML = b.slice().reverse().map((x,i,arr)=>{
     const nx = arr[i+1];                      // 反轉後,下一筆才是前一天
     const d = nx ? x.count - nx.count : null;
@@ -910,13 +1003,17 @@ function renderBreadth(){
     const broadCells = broad
       ? `<td>${broad.pct.toFixed(2)}%</td><td>${broad.count} / ${broad.eligible}</td>`
       : "<td>—</td><td>—</td>";
+    const short = ma60ByDate.get(x.date);
+    const highLow = highLowByDate.get(x.date);
     return `<tr>
       <td>${x.date}</td>
       <td>${x.count}</td>
       <td>${x.pct.toFixed(2)}%</td>
       <td class="${cls}">${dz}</td>
       ${cells}
+      ${us ? "" : `<td title="${short ? `${short.count} / ${short.eligible} 檔` : ""}">${short ? `${short.pct.toFixed(2)}%` : "—"}</td>`}
       ${broadCells}
+      ${us ? "" : `<td>${highLow ? highLow.new_high : "—"}</td><td>${highLow ? highLow.new_low : "—"}</td>`}
       <td><span class="br-bar" style="width:${x.count/max*140}px"></span></td>
     </tr>`;
   }).join("");
