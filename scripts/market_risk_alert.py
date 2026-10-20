@@ -163,27 +163,13 @@ def process(result, commit=False, state_path=STATE):
     state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
     values = result["values"]
     latest = values["date"]
-    prior_date = state.get("last_evaluated_date", "")
-    prior_active = bool(state.get("last_active", False))
-    unseen = [r for r in result["confirmed_series"] if r["date"] > prior_date]
-    if not prior_date:
-        newly_active = bool(values["active_confirmed"])
-    elif prior_date == latest:
-        newly_active = bool(values["active_confirmed"] and not prior_active)
-    else:
-        crossed = False
-        for row in unseen:
-            if row["active"] and not prior_active:
-                crossed = True
-            prior_active = row["active"]
-        newly_active = bool(values["active_confirmed"] and crossed)
-    if state.get("last_alert_date") == latest:
-        newly_active = False
-    output = {"status": "triggered" if newly_active else "quiet", "values": values}
+    # Alert on every active trading date, but never repeat for the same date.
+    should_alert = bool(values["active_confirmed"]) and state.get("last_alert_date") != latest
+    output = {"status": "triggered" if should_alert else "quiet", "values": values}
     if commit:
         next_state = {"last_evaluated_date": latest,
                       "last_active": bool(values["active_confirmed"]),
-                      "last_alert_date": latest if newly_active else state.get("last_alert_date")}
+                      "last_alert_date": latest if should_alert else state.get("last_alert_date")}
         temp = state_path.with_suffix(".tmp")
         temp.write_text(json.dumps(next_state, ensure_ascii=False, indent=2), encoding="utf-8")
         os.replace(temp, state_path)
@@ -203,7 +189,7 @@ def message(values):
         f"（20 日均值 {values['broad_ma20']:.2f}%；10 日前 {values['broad_10ago']:.2f}%）。\n"
         f"動能上榜比例：{values['leader_pct']:.2f}%"
         f"（20 日均值 {values['leader_ma20']:.2f}%；10 日前 {values['leader_10ago']:.2f}%）。\n"
-        "三項條件首次同時成立。這是研究警戒，不是交易指令。" + note
+        "三項條件同時成立。這是研究警戒，不是交易指令。" + note
     )
 
 

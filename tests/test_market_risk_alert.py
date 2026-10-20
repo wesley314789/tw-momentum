@@ -32,8 +32,13 @@ with tempfile.TemporaryDirectory() as folder:
                                 [("2026-10-02", True)]), True, state)["status"] == "triggered"
     assert alert.process(sample("2026-10-02", True,
                                 [("2026-10-02", True)]), True, state)["status"] == "quiet"
+    assert alert.process(sample("2026-10-03", True,
+                                [("2026-10-02", True), ("2026-10-03", True)]),
+                         True, state)["status"] == "triggered"
+    assert alert.process(sample("2026-10-03", True,
+                                [("2026-10-03", True)]), True, state)["status"] == "quiet"
     assert alert.process(sample("2026-10-05", False,
-                                [("2026-10-02", True), ("2026-10-05", False)]),
+                                [("2026-10-03", True), ("2026-10-05", False)]),
                          True, state)["status"] == "quiet"
     assert alert.process(sample("2026-10-06", True,
                                 [("2026-10-05", False), ("2026-10-06", True)]),
@@ -56,6 +61,7 @@ sys.modules["requests"] = types.SimpleNamespace(post=post, RequestException=Exce
 alert.send_telegram(values, "private-test-token", "12345")
 assert sent[0][1]["chat_id"] == "12345"
 assert "2026-10-06" in sent[0][1]["text"]
+assert "首次" not in sent[0][1]["text"]
 assert "private-test-token" not in sent[0][1]["text"]
 sys.modules["requests"].post = lambda *args, **kwargs: types.SimpleNamespace(
     status_code=401, json=lambda: {"ok": False})
