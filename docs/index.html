@@ -191,7 +191,7 @@ tbody tr:hover{background:var(--surface)}
 .rotation-chart .average{stroke:var(--blue,#4c8dff)}
 .rotation-chart circle{fill:var(--amber);opacity:0}
 .rotation-chart circle:hover{opacity:1}
-.rotation-dates{display:flex;justify-content:space-between;gap:4px;color:var(--muted);
+.rotation-dates,.chart-dates{display:flex;justify-content:space-between;gap:4px;color:var(--muted);
   font:10px var(--mono);margin-top:5px}
 .rotation-note{font-size:11px;color:var(--muted);margin-top:8px}
 
@@ -377,6 +377,7 @@ tbody tr:hover{background:var(--surface)}
       </div>
       <div class="br-sub" id="ma200-sub"></div>
       <div class="ma200-chart" id="ma200-chart"></div>
+      <div class="chart-dates" id="ma200-dates"></div>
       <div class="br-legend" id="ma200-legend">紅線：站上各自 200 日均線的比例 · 每檔股票等權計算</div>
     </div>
     <div class="high-low-block" id="high-low-block" hidden>
@@ -388,6 +389,7 @@ tbody tr:hover{background:var(--surface)}
       </div>
       <div class="br-sub" id="high-low-sub"></div>
       <div class="high-low-chart" id="high-low-chart"></div>
+      <div class="chart-dates" id="high-low-dates"></div>
       <div class="br-legend"><span><s style="background:var(--up)"></s>收盤新高家數</span>
         <span><s style="background:var(--down)"></s>收盤新低家數</span></div>
     </div>
@@ -775,6 +777,12 @@ function movingAvg(v, n = MA_N){
   return out;
 }
 
+function renderChartDates(id, series){
+  const indices = [...new Set([0,.25,.5,.75,1].map(f=>Math.round((series.length-1)*f)))];
+  $(id).innerHTML = indices.map(i=>
+    `<span>${series[i].date.slice(5).replace("-","/")}</span>`).join("");
+}
+
 function renderMa200(){
   const box = $("ma200-block");
   const us = tab === "usbreadth";
@@ -842,6 +850,7 @@ function renderMa200(){
   $("ma200-chart").innerHTML = `<svg viewBox="0 0 ${series.length} 100" preserveAspectRatio="none" role="img" aria-label="${us ? "站上200日均線" : "站上60日及200日均線"}的股票比例走勢">`
     + `<line class="mid" x1="0" y1="50" x2="${series.length}" y2="50"></line>`
     + `<polyline class="series" points="${pts}"></polyline>${shortLines}${dots}${shortDots}</svg>`;
+  renderChartDates("ma200-dates", series);
 }
 
 function renderHighLow(){
@@ -868,6 +877,7 @@ function renderHighLow(){
   };
   $("high-low-chart").innerHTML = `<svg viewBox="0 0 ${series.length} 100" preserveAspectRatio="none" role="img" aria-label="52週收盤新高與新低家數走勢">`
     + line("new_high","新高","high") + line("new_low","新低","low") + `</svg>`;
+  renderChartDates("high-low-dates", series);
 }
 
 function renderRotation(){
@@ -914,9 +924,7 @@ function renderRotation(){
     + `<polyline class="daily" points="${daily}"></polyline>`
     + (avg ? `<polyline class="average" points="${avg}"></polyline>` : "")
     + dots + `</svg>`;
-  const dateIndices = [...new Set([0,.25,.5,.75,1].map(f=>Math.round((series.length-1)*f)))];
-  $("rotation-dates").innerHTML = dateIndices.map(i=>
-    `<span>${series[i].date.slice(5).replace("-","/")}</span>`).join("");
+  renderChartDates("rotation-dates", series);
   $("rotation-note").textContent = us
     ? `黃線：科技占兩組成交額比例；藍線：20 日均。收盤價×成交量估計；使用目前市值 > $5 億的 Nasdaq 清單及目前產業分類回推歷史。`
       + `科技含 Technology、Telecommunications；非科技含金融及 Health Care（不限於生技）。其他及未知類別不納入。當日行情覆蓋 ${last.coverage_pct.toFixed(1)}%。成交額不代表淨買超。`
