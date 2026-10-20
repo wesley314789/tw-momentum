@@ -2,6 +2,24 @@
   "version": 1,
   "days": [
     {
+      "date": "2026-10-20",
+      "scan": {"changed": 0, "complete": 4, "partial": 0, "cumulative": 197},
+      "items": [
+        {
+          "title": "貿聯與 ams OSRAM 合作開發光互連",
+          "fact": "貿聯公告與 ams OSRAM 合作開發 AI 資料中心的光互連方案，並展示結合 microVCSEL 陣列與多芯光纖連接器的實機。",
+          "source_name": "貿聯公司公告（2026-09-21）",
+          "source_url": "https://www.bizlinktech.com/zh-tw/news/bizlink-partners-with-ams-osram-to-advance-photonics-for-ai-data-center-interconnects"
+        },
+        {
+          "title": "台達電展示 800 VDC 電源與液冷方案",
+          "fact": "台達電公告於 OCP Global Summit 2026 展示 800 VDC、660 kW 機列電源架，以及液冷散熱方案。",
+          "source_name": "台達電公司公告（2026-10-15）",
+          "source_url": "https://www.delta-americas.com/en-US/news/40272"
+        }
+      ]
+    },
+    {
       "date": "2026-10-19",
       "scan": {"changed": 21, "complete": 7, "partial": 5, "cumulative": 193},
       "items": [
