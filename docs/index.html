@@ -1038,7 +1038,11 @@ document.querySelectorAll(".tab").forEach(b=>{
 });
 ["q","mkt"].forEach(id=>$(id).addEventListener("input",render));
 
-fetch("./data/latest.json")
+// GitHub Pages caches JSON for 10 minutes. A fresh query key prevents new
+// HTML from being paired with an older data file during a deployment.
+const fetchCurrentData = path => fetch(`${path}?v=${Date.now()}`, {cache:"no-store"});
+
+fetchCurrentData("./data/latest.json")
   .then(r=>{ if(!r.ok) throw new Error(r.status); return r.json(); })
   .then(d=>{
     // 合併而非覆蓋 —— 美股是另一支 fetch, 誰先回來不一定, 直接指派會把對方洗掉
@@ -1062,7 +1066,7 @@ fetch("./data/latest.json")
   });
 
 // 美股是另一支腳本產生的,分開抓;抓不到就讓那兩個分頁空著,不影響台股
-fetch("./data/us_latest.json")
+fetchCurrentData("./data/us_latest.json")
   .then(r=>{ if(!r.ok) throw new Error(r.status); return r.json(); })
   .then(d=>{
     DATA.us = d.picks || [];
@@ -1094,7 +1098,7 @@ const SIGNED_GEX_LEVELS = [
 const fmtPts = v => v==null ? "—" : Math.round(v).toLocaleString("en");
 const fmtConc = v => v==null ? "" : ` · ${Math.abs(v)>=1e9?(v/1e9).toFixed(2)+"B":(v/1e6).toFixed(1)+"M"}`;
 
-fetch("./data/gex_latest.json")
+fetchCurrentData("./data/gex_latest.json")
   .then(r=>{ if(!r.ok) throw new Error(r.status); return r.json(); })
   .then(d=>{
     const REGIME = {
