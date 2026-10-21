@@ -2,6 +2,24 @@
   "version": 1,
   "days": [
     {
+      "date": "2026-10-21",
+      "scan": {"changed": 30, "complete": 6, "partial": 3, "cumulative": 203},
+      "items": [
+        {
+          "title": "技嘉展示機櫃級 AI 基礎架構",
+          "fact": "技嘉於 COMPUTEX 2026 展示機櫃級 AI 系統、模組化資料中心方案及 AI 基礎架構管理軟體。",
+          "source_name": "技嘉公司新聞（2026-06-01）",
+          "source_url": "https://www.gigabyte.com/press/news/2395"
+        },
+        {
+          "title": "聯發科擴展資料中心客製 AI 晶片業務",
+          "fact": "聯發科於官方文章說明其資料中心客製 AI 加速器、先進封裝與高速互連布局，並表示參與 NVIDIA NVLink Fusion 生態系。",
+          "source_name": "聯發科官方文章（2026-09-22）",
+          "source_url": "https://www.mediatek.com/tek-talk-blogs/how-mediatek-built-its-way-to-global-technology-leadership"
+        }
+      ]
+    },
+    {
       "date": "2026-10-20",
       "scan": {"changed": 0, "complete": 4, "partial": 0, "cumulative": 197},
       "items": [
