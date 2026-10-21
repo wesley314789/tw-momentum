@@ -211,13 +211,60 @@ def write_daily(bars: dict[str, pd.DataFrame], members: dict[str, list[str]],
     current = current.drop_duplicates(["date", "index"], keep="last").sort_values(["date", "index"])
     LIVE_CSV.parent.mkdir(parents=True, exist_ok=True)
     current.to_csv(LIVE_CSV, index=False)
-    records = current.tail(180*len(INDICES)).to_dict("records")
+    # Keep the observed series intact. Truncating it would eventually create
+    # a gap between the fixed reconstruction and newer daily snapshots.
+    records = current.to_dict("records")
     LIVE_JSON.parent.mkdir(parents=True, exist_ok=True)
+    previous = json.loads(LIVE_JSON.read_text(encoding="utf-8")) if LIVE_JSON.exists() else {}
     LIVE_JSON.write_text(json.dumps({"updated": dt.datetime.now(dt.timezone.utc).isoformat(),
-                                    "depth_pct": 20, "rows": records},
+                                    "depth_pct": 20, "rows": records,
+                                    "reconstructed_history": previous.get("reconstructed_history")},
                                    ensure_ascii=False, allow_nan=False), encoding="utf-8")
     print(f"Saved observed US index breadth for {date}: "
           + ", ".join(f"{r['index']} {r['pct']:.2f}%" for r in rows), flush=True)
+
+
+def seed_history(bars: dict[str, pd.DataFrame], members: dict[str, list[str]],
+                 holdings_dates: dict[str, str], days: int = 252) -> None:
+    """One-time illustrative history from a fixed membership snapshot.
+
+    This is deliberately kept separate from observed daily snapshots. It must
+    never be used as point-in-time history for event studies or alerts.
+    """
+    if not LIVE_JSON.exists():
+        raise RuntimeError("Create the first observed daily snapshot before seeding history")
+    payload = json.loads(LIVE_JSON.read_text(encoding="utf-8"))
+    if payload.get("reconstructed_history"):
+        raise RuntimeError("Reconstructed history already exists; refusing to change its membership anchor")
+    observed = payload.get("rows") or []
+    first_observed = min(r["date"] for r in observed)
+    historical = []
+    for name, (index_symbol, _) in INDICES.items():
+        calendar = bars[index_symbol].date.tolist()
+        breadth = stock_breadth(bars, members[name], calendar)
+        frame = breadth[(breadth.depth.eq(20)) & (breadth.date.lt(first_observed))]
+        frame = frame[frame.eligible.ge(len(members[name]) * 0.85)].tail(days)
+        historical.extend({"date": r.date, "index": name,
+                           "count": int(r["count"]), "eligible": int(r.eligible),
+                           "pct": round(float(r["count"] / r.eligible * 100), 2)}
+                          for _, r in frame.iterrows())
+    common = set.intersection(*(set(r["date"] for r in historical if r["index"] == name)
+                                for name in INDICES))
+    common = set(sorted(common)[-days:])
+    rows = sorted((r for r in historical if r["date"] in common),
+                  key=lambda r: (r["date"], r["index"]))
+    if len(common) < days * 0.9:
+        raise RuntimeError(f"Too few common dates for reconstructed history: {len(common)}")
+    payload["reconstructed_history"] = {
+        "basis": "fixed_current_etf_holdings_reconstruction",
+        "holdings_asof": {name: pd.to_datetime(value).date().isoformat()
+                          for name, value in holdings_dates.items()},
+        "first_observed": first_observed,
+        "rows": rows,
+    }
+    LIVE_JSON.write_text(json.dumps(payload, ensure_ascii=False, allow_nan=False), encoding="utf-8")
+    print(f"Saved {len(common)} reconstructed dates before {first_observed}; "
+          "observed rows unchanged", flush=True)
 
 
 def main() -> int:
@@ -225,6 +272,8 @@ def main() -> int:
     ap.add_argument("--refresh", action="store_true", help="refetch cached Yahoo bars")
     ap.add_argument("--daily", action="store_true",
                     help="append today's observed ETF-membership breadth to the website")
+    ap.add_argument("--seed-history", action="store_true",
+                    help="one-time reconstructed chart history using current ETF holdings")
     ap.add_argument("--out", type=Path,
                     default=ROOT / "reports" / "us_index_drawdown_study.json")
     args = ap.parse_args()
@@ -255,6 +304,9 @@ def main() -> int:
         raise RuntimeError(f"Index price series missing: {errors}")
     if args.daily:
         write_daily(bars, members, dates)
+        return 0
+    if args.seed_history:
+        seed_history(bars, members, dates)
         return 0
     results = {}
     for name, (index_symbol, _) in INDICES.items():

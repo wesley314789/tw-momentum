@@ -185,6 +185,7 @@ tbody tr:hover{background:var(--surface)}
 .drawdown20-chart .pending{height:100%;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:13px;text-align:center;padding:0 16px}
 .drawdown20-chart svg{display:block;width:100%;height:100%}
 .drawdown20-chart .series{fill:none;stroke-width:2;vector-effect:non-scaling-stroke}
+.drawdown20-chart .reconstructed{stroke-dasharray:4 3;opacity:.75}
 .drawdown20-chart .listed{stroke:var(--blue)}
 .drawdown20-chart .otc{stroke:var(--amber)}
 .drawdown20-chart .sox{stroke:var(--up)}
@@ -493,7 +494,7 @@ const COLS_US = [
   {k:"days",   label:"上榜", num:true},
 ];
 
-let DATA = {daily:[], momentum:[], breakout_watchlist:[], fresh_breakout:[], breadth:[], ma60_breadth:[], ma200_breadth:[], high_low_breadth:[], drawdown20_breadth:[], twrotation:[], us:[], usbreadth:[], usma200_breadth:[], us_index_drawdown:[], usrotation:[]};
+let DATA = {daily:[], momentum:[], breakout_watchlist:[], fresh_breakout:[], breadth:[], ma60_breadth:[], ma200_breadth:[], high_low_breadth:[], drawdown20_breadth:[], twrotation:[], us:[], usbreadth:[], usma200_breadth:[], us_index_drawdown:[], us_index_drawdown_history:[], usrotation:[]};
 let tab = "daily";
 let sortKey = "chg_pct", sortDir = -1;
 const sectorOpen = new Set();
@@ -910,8 +911,14 @@ function renderHighLow(){
 function renderDrawdown20(){
   const box = $("drawdown20-block");
   const us = tab === "usbreadth";
-  const rows = (us ? DATA.us_index_drawdown : DATA.drawdown20_breadth || []).filter(x=>
+  const observed = (us ? DATA.us_index_drawdown : DATA.drawdown20_breadth || []).filter(x=>
     x.eligible > 0 && Number.isFinite(x.pct));
+  const firstObserved = us && observed.length
+    ? observed.reduce((min,x)=>x.date<min?x.date:min, observed[0].date) : null;
+  const reconstructed = us && firstObserved
+    ? (DATA.us_index_drawdown_history || []).filter(x=>
+        x.date < firstObserved && x.eligible > 0 && Number.isFinite(x.pct)) : [];
+  const rows = [...reconstructed, ...observed];
   const groups = us
     ? [{key:"SP500",label:"標普 500",cls:"listed",color:"var(--blue)"},
        {key:"NDX",label:"小那 100",cls:"otc",color:"var(--amber)"},
@@ -921,12 +928,15 @@ function renderDrawdown20(){
   const byGroup = new Map(groups.map(g=>[g.key,
     new Map(rows.filter(x=>(us ? x.index : x.market)===g.key).map(x=>[x.date,x]))]));
   const series = [...byGroup.get(groups[0].key).keys()].sort()
-    .filter(d=>groups.every(g=>byGroup.get(g.key).has(d)));
+    .filter(d=>groups.every(g=>byGroup.get(g.key).has(d))).slice(-253);
+  const observedDates = [...new Set(observed.filter(x=>(us ? x.index : x.market)===groups[0].key)
+    .map(x=>x.date))].sort().filter(d=>groups.every(g=>observed.some(x=>
+      x.date===d && (us ? x.index : x.market)===g.key)));
   box.hidden = !["breadth","usbreadth"].includes(tab) || !series.length;
   if(box.hidden) return;
 
   const lastDate = series[series.length-1];
-  const prevDate = series.length > 1 ? series[series.length-2] : null;
+  const prevDate = observedDates.length > 1 ? observedDates[observedDates.length-2] : null;
   const pp = n => n==null ? "—" : `${n>=0?"+":""}${n.toFixed(2)}pp`;
   $("drawdown20-title").textContent = (us ? "指數成分股 · " : "") + "距各自52週收盤高點跌至少20%";
   $("drawdown20-listed-label").textContent = us ? "標普 500" : "上市股票";
@@ -943,7 +953,8 @@ function renderDrawdown20(){
   }).map(([k,v])=>`<div class="br-stat"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("") : "";
   const through = DATA.drawdown20_actions_through;
   $("drawdown20-sub").textContent = us
-    ? `${lastDate} · SPY／QQQ／SOXQ 當時持股快照；每天收盤後新增，不用今日成分股回填舊日。每檔等權，缺歷史者不計。`
+    ? `${lastDate} · 虛線為使用 ${DATA.us_index_drawdown_history_asof || "10/20"} 持股名單回推的歷史，`
+      + `有成分股回溯偏差；實線為 ${firstObserved} 起逐日保存的實際快照。每檔等權，缺歷史者不計。`
     : `${lastDate} · 過去252個交易日最高收盤價；歷史不足或跳價未能校正者不計`
       + (through && through < lastDate ? ` · 除權息校正截至 ${through}` : "");
 
@@ -960,21 +971,25 @@ function renderDrawdown20(){
   const pad = Math.max(2,(max-min)*.12);
   const lo = Math.max(0,min-pad), hi = Math.min(100,max+pad);
   const y = v => (100-(v-lo)/(hi-lo)*100).toFixed(2);
+  const split = us ? series.findIndex(d=>d>=firstObserved) : 0;
   const line = g=>{
-    const points = series.map((d,i)=>`${i+0.5},${y(byGroup.get(g.key).get(d).pct)}`).join(" ");
+    const point = i=>`${i+0.5},${y(byGroup.get(g.key).get(series[i]).pct)}`;
+    const back = split > 0 ? series.slice(0,split+1).map((_,i)=>point(i)).join(" ") : "";
+    const live = series.slice(split).map((_,i)=>point(i+split)).join(" ");
     const dots = series.map((d,i)=>{
       const row = byGroup.get(g.key).get(d);
-      return `<circle class="${i===series.length-1?"latest":""}" cx="${i+0.5}" cy="${y(row.pct)}" r="${series.length===1?1.5:.6}" style="fill:${g.color}">`
+      return `<circle class="${i===series.length-1?"latest":""}" cx="${i+0.5}" cy="${y(row.pct)}" r=".6" style="fill:${g.color}">`
         + `<title>${d} ${g.label} ${row.pct.toFixed(2)}% (${row.count}/${row.eligible})</title></circle>`;
     }).join("");
-    return `<polyline class="series ${g.cls}" points="${points}"></polyline>${dots}`;
+    return (back ? `<polyline class="series reconstructed ${g.cls}" points="${back}"></polyline>` : "")
+      + `<polyline class="series ${g.cls}" points="${live}"></polyline>${dots}`;
   };
   $("drawdown20-chart").innerHTML = `<svg viewBox="0 0 ${Math.max(series.length,2)} 100" preserveAspectRatio="none" role="img" aria-label="股票距52週高點跌至少20%的比例走勢">`
     + `<line class="baseline" x1="0" y1="50" x2="${series.length}" y2="50"></line>`
     + groups.map(line).join("") + `</svg>`;
   $("drawdown20-scale").innerHTML = `<span>縱軸 ${lo.toFixed(0)}%～${hi.toFixed(0)}%</span><span>比例越高，跌深的股票越多</span>`;
   $("drawdown20-legend").innerHTML = groups.map(g=>`<span><s style="background:${g.color}"></s>${g.label}</span>`).join("")
-    + `<span>每檔股票等權；圖表縱軸依目前區間縮放</span>`;
+    + `<span>${us && split>0 ? "虛線：目前名單回推；實線：每日快照 · " : ""}每檔股票等權；圖表縱軸依目前區間縮放</span>`;
   renderChartDates("drawdown20-dates", series.map(date=>({date})));
 }
 
@@ -1191,6 +1206,8 @@ fetchCurrentData("./data/us_index_drawdown_latest.json")
   .then(r=>{ if(!r.ok) throw new Error(r.status); return r.json(); })
   .then(d=>{
     DATA.us_index_drawdown = d.rows || [];
+    DATA.us_index_drawdown_history = d.reconstructed_history?.rows || [];
+    DATA.us_index_drawdown_history_asof = d.reconstructed_history?.holdings_asof?.SOX || "";
     if(tab === "usbreadth") renderBreadth();
   })
   .catch(()=>{});

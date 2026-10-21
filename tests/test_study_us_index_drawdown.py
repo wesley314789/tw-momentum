@@ -1,5 +1,6 @@
 import unittest
 import tempfile
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -45,11 +46,40 @@ class USIndexDrawdownStudyTests(unittest.TestCase):
                 study.LIVE_CSV = Path(directory) / "live.csv"
                 study.LIVE_JSON = Path(directory) / "live.json"
                 study.write_daily(bars, members, holdings_dates)
+                payload = json.loads(study.LIVE_JSON.read_text(encoding="utf-8"))
+                payload["reconstructed_history"] = {"basis": "test", "rows": []}
+                study.LIVE_JSON.write_text(json.dumps(payload), encoding="utf-8")
                 study.write_daily(bars, members, holdings_dates)
                 saved = pd.read_csv(study.LIVE_CSV)
                 self.assertEqual(len(saved), 3)
                 self.assertTrue(saved["count"].eq(1).all())
                 self.assertTrue(saved["basis"].eq("observed_etf_holdings").all())
+                self.assertEqual(json.loads(study.LIVE_JSON.read_text(encoding="utf-8"))
+                                 ["reconstructed_history"]["basis"], "test")
+            finally:
+                study.LIVE_CSV, study.LIVE_JSON = old_csv, old_json
+
+    def test_reconstructed_history_stays_separate_from_observed_rows(self):
+        dates = pd.date_range("2024-01-01", periods=300, freq="B").strftime("%Y-%m-%d").tolist()
+        index_frame = pd.DataFrame({"date": dates, "close": [100.0]*len(dates)})
+        stock_frame = pd.DataFrame({"date": dates, "adjclose": [100.0]*len(dates)})
+        bars = {"^GSPC": index_frame, "^NDX": index_frame, "^SOX": index_frame,
+                "TEST": stock_frame}
+        members = {name: ["TEST"] for name in study.INDICES}
+        holdings_dates = {name: dates[-1] for name in study.INDICES}
+        old_csv, old_json = study.LIVE_CSV, study.LIVE_JSON
+        with tempfile.TemporaryDirectory() as directory:
+            try:
+                study.LIVE_CSV = Path(directory) / "live.csv"
+                study.LIVE_JSON = Path(directory) / "live.json"
+                study.write_daily(bars, members, holdings_dates)
+                study.seed_history(bars, members, holdings_dates, days=10)
+                payload = json.loads(study.LIVE_JSON.read_text(encoding="utf-8"))
+                history = payload["reconstructed_history"]
+                self.assertEqual(len(history["rows"]), 30)
+                self.assertTrue(all(r["date"] < dates[-1] for r in history["rows"]))
+                self.assertEqual({r["date"] for r in payload["rows"]}, {dates[-1]})
+                self.assertEqual(history["holdings_asof"]["SOX"], dates[-1])
             finally:
                 study.LIVE_CSV, study.LIVE_JSON = old_csv, old_json
 
