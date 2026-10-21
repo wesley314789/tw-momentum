@@ -3,9 +3,10 @@
 """
 us_breadth.py — 美股版動能篩選與市場廣度
 
-條件與台股那組相同(scripts/update_data.py 的 momentum_screen):
+前五項條件對照台股那組(scripts/update_data.py 的 momentum_screen):
     收盤 > SMA200、SMA10 > SMA20、市值 > MIN_MCAP、成交值 > MIN_TURNOVER、
     近 PERF_DAYS 個交易日漲幅 - 同期 S&P 500 漲幅 > MIN_EXCESS 個百分點
+台股另有距 52 週收盤高點不超過 25% 的門檻；美股目前只顯示距離，不作篩選。
 
 最後一條 2026-09-18 起從「漲幅 > 20%」改成相對大盤, 理由同台股:絕對門檻跟著
 大盤走, 廣度會混進大量「大盤本身漲多少」的成分。
@@ -18,8 +19,8 @@ us_breadth.py — 美股版動能篩選與市場廣度
   * 宇宙與市值 —— Nasdaq screener, 一次回傳全美約 7,000 檔
   * 每日 K 線 —— Yahoo chart API, 逐檔但一次給一整年
 
-Yahoo 每次可回傳一年或兩年日線, 日常更新不用另存價格歷史。美股動能與
-站上 200MA 兩套廣度各自保留每日結果；歷史回補抓兩年, 日常更新抓一年。
+Yahoo 每次回傳兩年日線；一年視窗有時只有 251 根，無法穩定計算完整的
+252 日最高收盤價。美股動能與站上 200MA 兩套廣度各自保留每日結果。
 
 ⚠ Yahoo 這支是非官方 API, 沒有服務保證, 隨時可能改格式或擋人 —— 與台股用
 證交所官方資料的性質完全不同。抓不到的個股會被跳過並計數, 失敗率過高時會警告。
@@ -57,6 +58,7 @@ MIN_EXCESS = 10.0     # 近一個月超額報酬下限(百分點, 個股漲幅 -
 BENCH = "^GSPC"       # 比較基準: S&P 500
 PERF_DAYS = 20        # 「一個月」取 20 個交易日, 與台股 BR_PERF_DAYS 一致
 SMA_LONG = 200
+HIGH52_DAYS = 252
 WORKERS = 4           # 併發數。Yahoo 沒有公開額度, 保守一點
 KEEP_DAYS = 280
 
@@ -96,7 +98,7 @@ def fetch_universe() -> pd.DataFrame:
     return df[["symbol", "yahoo", "name", "mcap", "sector"]].reset_index(drop=True)
 
 
-def _one(session: requests.Session, sym: str, retries: int = 2, rng: str = "1y"):
+def _one(session: requests.Session, sym: str, retries: int = 2, rng: str = "2y"):
     for attempt in range(retries + 1):
         try:
             # quote: 指數代號帶 ^(^GSPC), 放進路徑前要編碼
@@ -107,12 +109,18 @@ def _one(session: requests.Session, sym: str, retries: int = 2, rng: str = "1y")
                 continue
             res = r.json()["chart"]["result"][0]
             q = res["indicators"]["quote"][0]
+            adjusted = res["indicators"].get("adjclose")
+            adj = adjusted[0].get("adjclose") if adjusted else None
             df = pd.DataFrame({
                 "date": pd.to_datetime(res["timestamp"], unit="s", utc=True)
                           .tz_convert("America/New_York").date,
                 "close": q["close"],
                 "volume": q["volume"],
-            }).dropna()
+                # Only the distance-to-high display uses adjusted close.
+                # Missing adjusted values leave that field blank, rather than
+                # silently treating a split as a deep drawdown.
+                "adjclose": adj if adj is not None else [np.nan] * len(res["timestamp"]),
+            }).dropna(subset=["close", "volume"])
             # 盤中執行時 Yahoo 會回一根還沒收完的「今天」。每日更新遇到已經有
             # 廣度的日子會跳過, 所以盤中算出來的半根 K 棒會永久留在紀錄裡 ——
             # 排程都在美股收盤後跑所以沒踩過, 手動執行就會。收盤(16:00 ET)加
@@ -128,7 +136,7 @@ def _one(session: requests.Session, sym: str, retries: int = 2, rng: str = "1y")
     return sym, None
 
 
-def fetch_bench(rng: str = "1y"):
+def fetch_bench(rng: str = "2y"):
     """
     S&P 500 收盤, 回傳 (日期序數陣列, 收盤陣列)。抓不到就直接失敗 —— 沒有基準
     就算不出相對強弱, 硬算下去會讓每一檔都被判不合格, 廣度變成 0。
@@ -143,8 +151,8 @@ def fetch_bench(rng: str = "1y"):
             df["close"].to_numpy(dtype=float))
 
 
-def fetch_bars(symbols: list[str], rng: str = "1y") -> dict:
-    """逐檔抓日 K(預設一年)。回傳 {symbol: DataFrame}, 抓不到的不放進去。"""
+def fetch_bars(symbols: list[str], rng: str = "2y") -> dict:
+    """逐檔抓日 K(預設兩年)。回傳 {symbol: DataFrame}, 抓不到的不放進去。"""
     out, done = {}, 0
     with requests.Session() as s:
         s.headers.update(HEADERS)
@@ -238,6 +246,31 @@ def screen(arrs: dict, uni: pd.DataFrame, as_of: int | None = None,
                      "date": dt.date.fromordinal(int(dates[end - 1])).isoformat()})
     df = pd.DataFrame(rows)
     return df.sort_values("perf_1m", ascending=False) if len(df) else df
+
+
+def add_high52_distance(recs: list[dict], bars: dict, as_of: dt.date) -> None:
+    """Add a display-only 252-session closing-high distance to selected stocks.
+
+    Yahoo's adjusted close keeps splits/dividends from creating false gaps.
+    Convert the high back to today's raw-price scale for the tooltip; the
+    percentage is calculated entirely in adjusted-price space.
+    """
+    for rec in recs:
+        rec["high52"] = rec["high52_distance_pct"] = None
+        frame = bars.get(rec["symbol"])
+        if frame is None or "adjclose" not in frame:
+            continue
+        window = frame.loc[frame["date"].le(as_of)].tail(HIGH52_DAYS)
+        if len(window) != HIGH52_DAYS or window["date"].iloc[-1] != as_of:
+            continue
+        adjusted = pd.to_numeric(window["adjclose"], errors="coerce").to_numpy(dtype=float)
+        if not np.isfinite(adjusted).all() or (adjusted <= 0).any():
+            continue
+        peak = float(adjusted.max())
+        current = float(adjusted[-1])
+        raw_close = float(window["close"].iloc[-1])
+        rec["high52"] = round(raw_close * peak / current, 2)
+        rec["high52_distance_pct"] = round((1 - current / peak) * 100, 2)
 
 
 def count_universe(arrs: dict, as_of: int, symbols=None) -> int:
@@ -458,10 +491,25 @@ def main():
                          "回看約可重算 280 天(抓一年只剩 50 天左右)")
     ap.add_argument("--ma200-backfill", action="store_true",
                     help="只回補站上200MA的美股廣度，不重算既有動能名單")
+    ap.add_argument("--refresh-high52", action="store_true",
+                    help="只為目前美股榜單補上距52週新高欄位，不重算篩選與題材")
     args = ap.parse_args()
-    if args.backfill and args.ma200_backfill:
-        ap.error("--backfill 與 --ma200-backfill 不能同時使用")
-    rng = "2y" if args.backfill or args.ma200_backfill else "1y"
+    if sum((args.backfill, args.ma200_backfill, args.refresh_high52)) > 1:
+        ap.error("--backfill、--ma200-backfill、--refresh-high52 只能選一個")
+    if args.refresh_high52:
+        payload = json.loads(OUTPUT_PATH.read_text(encoding="utf-8"))
+        recs = payload.get("picks") or []
+        if not recs or not payload.get("trade_date"):
+            raise ValueError("美股榜單尚無可回補的資料")
+        selected_bars = fetch_bars([r["symbol"] for r in recs], rng="2y")
+        add_high52_distance(recs, selected_bars, dt.date.fromisoformat(payload["trade_date"]))
+        valid = sum(r["high52_distance_pct"] is not None for r in recs)
+        if valid < len(recs) * 0.5:
+            raise RuntimeError(f"52週行情覆蓋過低 ({valid}/{len(recs)}), 未覆寫原榜單")
+        OUTPUT_PATH.write_text(json.dumps(payload, ensure_ascii=False, allow_nan=False), encoding="utf-8")
+        print(f"距52週新高已補 {valid}/{len(recs)} 檔；動能名單與題材未改動")
+        return 0
+    rng = "2y"  # 每日榜單也需要完整 252 根調整後收盤價
 
     uni = fetch_universe()
     print(f"宇宙: {len(uni)} 檔 (市值 > ${MIN_MCAP/1e6:.0f}M)")
@@ -559,6 +607,7 @@ def main():
     members = save_members(pd.DataFrame(mem_rows))
 
     recs = picks.drop(columns=["date"]).to_dict("records")
+    add_high52_distance(recs, bars, dt.date.fromordinal(cal[-1]))
 
     # 題材標註。跟台股一樣不讓它拖垮主流程 —— Google News 掛掉或格式變了,
     # 廣度數字還是要照樣產出。

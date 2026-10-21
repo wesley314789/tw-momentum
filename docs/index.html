@@ -487,6 +487,7 @@ const COLS_US = [
   {k:"symbol", label:"代號", num:false},
   {k:"name",   label:"名稱", num:false},
   {k:"close",  label:"收盤($)", num:true},
+  {k:"high52_distance_pct", label:"距52週新高", num:true},
   {k:"perf_1m",label:"1月績效", num:true},
   {k:"excess_1m",label:"超額", num:true},
   {k:"turnover",label:"成交值($M)", num:true},
@@ -660,6 +661,7 @@ function render(){
         <td>${x.symbol}</td>
         <td class="name">${x.name||""}</td>
         <td>${fmt(x.close,"close")}</td>
+        <td title="${x.high52==null?"未滿252個交易日或缺調整後收盤價":`近252個交易日最高收盤約 $${fmt(x.high52,"close")}；差距＝（最高收盤－現價）÷最高收盤`}">${fmt(x.high52_distance_pct,"high52_distance_pct")}</td>
         <td><span class="badge ${x.perf_1m>=0?"up":"down"}">${fmt(x.perf_1m,"perf_1m")}</span></td>
         <td title="個股 ${fmt(x.perf_1m,"perf_1m")} − 同期 S&amp;P 500 ${fmt(x.idx_1m,"perf_1m")}">${fmt(x.excess_1m,"excess_1m")}</td>
         <td>${fmt(x.turnover,"turnover")}</td>
@@ -754,7 +756,8 @@ function renderThemes(){
           <td>${x.symbol}</td>
           <td class="name">${x.name}${src}</td>
           <td>${fmt(x.close,"close")}</td>
-          <td><span class="badge up">${fmt(x.perf_1m,"perf_1m")}</span></td>
+          <td title="${x.high52==null?"未滿252個交易日或缺調整後收盤價":`近252個交易日最高收盤約 $${fmt(x.high52,"close")}；差距＝（最高收盤－現價）÷最高收盤`}">${fmt(x.high52_distance_pct,"high52_distance_pct")}</td>
+          <td><span class="badge ${x.perf_1m>=0?"up":"down"}">${fmt(x.perf_1m,"perf_1m")}</span></td>
           <td>$${(x.turnover||0).toFixed(0)}M</td>
           <td title="自 ${x.since||"—"} 起連續上榜">${fmt(x.days,"days")}</td>
         </tr>`;
@@ -781,9 +784,9 @@ function renderThemes(){
           + `title="前一個交易日 ${g.prev} 檔">${
             g.delta>0?"+":g.delta<0?"":"±"}${g.delta}</span>`}</span>
         <span class="th-stat">${val}</span>
-        <span class="th-stat">平均 <b>+${g.perf.toFixed(0)}%</b></span>
+        <span class="th-stat">平均 <b>${g.perf>0?"+":""}${g.perf.toFixed(0)}%</b></span>
       </div>
-      <div class="th-table-scroll"><table>${us?"":`<thead><tr><th>代號</th><th>名稱</th><th>收盤</th><th>距52週新高</th><th>1月績效</th><th>成交值(億)</th><th>上榜</th></tr></thead>`}<tbody>${rows}</tbody></table></div></div>`;
+      <div class="th-table-scroll"><table><thead><tr><th>代號</th><th>名稱</th><th>收盤</th><th>距52週新高</th><th>1月績效</th><th>${us?"成交值($M)":"成交值(億)"}</th><th>上榜</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
   }).join("");
 
   $("themes-panel").querySelectorAll("tr[data-url]").forEach(tr=>{
