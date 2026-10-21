@@ -956,6 +956,17 @@ def enrich_and_write(merged: pd.DataFrame, idx_hist: pd.DataFrame | None = None)
     except Exception as e:
         print(f"52週新高新低廣度計算失敗({e.__class__.__name__}): {e}")
         result["high_low_breadth"] = []
+    try:
+        try:
+            import drawdown20_breadth
+        except ModuleNotFoundError:
+            from scripts import drawdown20_breadth
+        down20, actions_through = drawdown20_breadth.update(merged)
+        result["drawdown20_breadth"] = down20.to_dict("records")
+        result["drawdown20_actions_through"] = actions_through
+    except Exception as e:
+        print(f"上市／上櫃跌離52週高點廣度計算失敗({e.__class__.__name__}): {e}")
+        result["drawdown20_breadth"] = []
 
     write_result(result)
     print(f"完成:{result['trade_date']} | 全市場 {result['universe']} 檔 | "
