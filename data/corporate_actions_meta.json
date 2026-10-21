@@ -1,10 +1,10 @@
 {
   "start": "2023-01-03",
-  "end": "2026-10-20",
+  "end": "2026-10-21",
   "source": [
     "https://www.twse.com.tw/rwd/zh/exRight/TWT49U",
     "https://www.tpex.org.tw/www/zh-tw/bulletin/exDailyQ"
   ],
-  "fetched_utc": "2026-10-20T07:41:22.559786+00:00",
-  "events": 9540
+  "fetched_utc": "2026-10-21T07:42:25.850833+00:00",
+  "events": 9545
 }
