@@ -1,0 +1,4 @@
+date,index,count,eligible,pct,holdings,holdings_asof,basis
+2026-10-20,NDX,49,99,49.49,101,2026-10-20,observed_etf_holdings
+2026-10-20,SOX,23,29,79.31,30,2026-10-20,observed_etf_holdings
+2026-10-20,SP500,161,498,32.33,503,2026-10-20,observed_etf_holdings

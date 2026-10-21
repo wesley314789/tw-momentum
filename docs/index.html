@@ -186,8 +186,10 @@ tbody tr:hover{background:var(--surface)}
 .drawdown20-chart .series{fill:none;stroke-width:2;vector-effect:non-scaling-stroke}
 .drawdown20-chart .listed{stroke:var(--blue)}
 .drawdown20-chart .otc{stroke:var(--amber)}
+.drawdown20-chart .sox{stroke:var(--up)}
 .drawdown20-chart circle{opacity:0}
 .drawdown20-chart circle:hover{opacity:1}
+.drawdown20-chart circle.latest{opacity:1}
 .drawdown20-chart .baseline{stroke:var(--line);stroke-width:1;vector-effect:non-scaling-stroke}
 .drawdown20-scale{display:flex;justify-content:space-between;color:var(--muted);font:10px var(--mono);margin-top:4px}
 .rotation-block{margin-top:24px;padding-top:16px;border-top:1px solid var(--line)}
@@ -404,19 +406,18 @@ tbody tr:hover{background:var(--surface)}
         <span><s style="background:var(--down)"></s>收盤新低家數</span></div>
     </div>
     <div class="drawdown20-block" id="drawdown20-block" hidden>
-      <h2 class="br-title">距各自52週收盤高點跌至少20%</h2>
+      <h2 class="br-title" id="drawdown20-title">距各自52週收盤高點跌至少20%</h2>
       <div class="high-low-values">
-        <div><div class="trend-label">上市股票</div><div class="br-now" id="drawdown20-listed"></div></div>
-        <div><div class="trend-label">上櫃股票</div><div class="br-now" id="drawdown20-otc"></div></div>
+        <div><div class="trend-label" id="drawdown20-listed-label">上市股票</div><div class="br-now" id="drawdown20-listed"></div></div>
+        <div><div class="trend-label" id="drawdown20-otc-label">上櫃股票</div><div class="br-now" id="drawdown20-otc"></div></div>
+        <div id="drawdown20-sox-wrap" hidden><div class="trend-label">費半成分股</div><div class="br-now" id="drawdown20-sox"></div></div>
         <div class="br-stats" id="drawdown20-stats"></div>
       </div>
       <div class="br-sub" id="drawdown20-sub"></div>
       <div class="drawdown20-chart" id="drawdown20-chart"></div>
       <div class="drawdown20-scale" id="drawdown20-scale"></div>
       <div class="chart-dates" id="drawdown20-dates"></div>
-      <div class="br-legend"><span><s style="background:var(--blue)"></s>上市</span>
-        <span><s style="background:var(--amber)"></s>上櫃</span>
-        <span>每檔股票等權；圖表縱軸依目前區間縮放</span></div>
+      <div class="br-legend" id="drawdown20-legend"></div>
     </div>
     <div class="rotation-block" id="rotation-block" hidden>
       <h2 class="br-title" id="rotation-title">科技／傳產成交值輪動</h2>
@@ -491,7 +492,7 @@ const COLS_US = [
   {k:"days",   label:"上榜", num:true},
 ];
 
-let DATA = {daily:[], momentum:[], breakout_watchlist:[], fresh_breakout:[], breadth:[], ma60_breadth:[], ma200_breadth:[], high_low_breadth:[], drawdown20_breadth:[], twrotation:[], us:[], usbreadth:[], usma200_breadth:[], usrotation:[]};
+let DATA = {daily:[], momentum:[], breakout_watchlist:[], fresh_breakout:[], breadth:[], ma60_breadth:[], ma200_breadth:[], high_low_breadth:[], drawdown20_breadth:[], twrotation:[], us:[], usbreadth:[], usma200_breadth:[], us_index_drawdown:[], usrotation:[]};
 let tab = "daily";
 let sortKey = "chg_pct", sortDir = -1;
 const sectorOpen = new Set();
@@ -907,51 +908,65 @@ function renderHighLow(){
 
 function renderDrawdown20(){
   const box = $("drawdown20-block");
-  const rows = (DATA.drawdown20_breadth || []).filter(x=>
+  const us = tab === "usbreadth";
+  const rows = (us ? DATA.us_index_drawdown : DATA.drawdown20_breadth || []).filter(x=>
     x.eligible > 0 && Number.isFinite(x.pct));
-  const listed = rows.filter(x=>x.market==="上市");
-  const otcByDate = new Map(rows.filter(x=>x.market==="上櫃").map(x=>[x.date,x]));
-  const series = listed.filter(x=>otcByDate.has(x.date));
-  box.hidden = tab !== "breadth" || !series.length;
+  const groups = us
+    ? [{key:"SP500",label:"標普 500",cls:"listed",color:"var(--blue)"},
+       {key:"NDX",label:"小那 100",cls:"otc",color:"var(--amber)"},
+       {key:"SOX",label:"費半",cls:"sox",color:"var(--up)"}]
+    : [{key:"上市",label:"上市",cls:"listed",color:"var(--blue)"},
+       {key:"上櫃",label:"上櫃",cls:"otc",color:"var(--amber)"}];
+  const byGroup = new Map(groups.map(g=>[g.key,
+    new Map(rows.filter(x=>(us ? x.index : x.market)===g.key).map(x=>[x.date,x]))]));
+  const series = [...byGroup.get(groups[0].key).keys()].sort()
+    .filter(d=>groups.every(g=>byGroup.get(g.key).has(d)));
+  box.hidden = !["breadth","usbreadth"].includes(tab) || !series.length;
   if(box.hidden) return;
 
-  const last = series[series.length-1];
-  const otc = otcByDate.get(last.date);
-  const prev = series.length > 1 ? series[series.length-2] : null;
-  const prevOtc = prev ? otcByDate.get(prev.date) : null;
+  const lastDate = series[series.length-1];
+  const prevDate = series.length > 1 ? series[series.length-2] : null;
   const pp = n => n==null ? "—" : `${n>=0?"+":""}${n.toFixed(2)}pp`;
-  $("drawdown20-listed").innerHTML = `${last.pct.toFixed(2)}%<small>${last.count} / ${last.eligible} 檔</small>`;
-  $("drawdown20-otc").innerHTML = `${otc.pct.toFixed(2)}%<small>${otc.count} / ${otc.eligible} 檔</small>`;
-  $("drawdown20-stats").innerHTML = [
-    ["上市對前日", pp(prev ? last.pct-prev.pct : null)],
-    ["上櫃對前日", pp(prevOtc ? otc.pct-prevOtc.pct : null)],
-  ].map(([k,v])=>`<div class="br-stat"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
+  $("drawdown20-title").textContent = (us ? "指數成分股 · " : "") + "距各自52週收盤高點跌至少20%";
+  $("drawdown20-listed-label").textContent = us ? "標普 500" : "上市股票";
+  $("drawdown20-otc-label").textContent = us ? "小那 100" : "上櫃股票";
+  $("drawdown20-sox-wrap").hidden = !us;
+  const ids = ["drawdown20-listed","drawdown20-otc","drawdown20-sox"];
+  groups.forEach((g,i)=>{
+    const r = byGroup.get(g.key).get(lastDate);
+    $(ids[i]).innerHTML = `${r.pct.toFixed(2)}%<small>${r.count} / ${r.eligible} 檔</small>`;
+  });
+  $("drawdown20-stats").innerHTML = groups.map(g=>{
+    const rows = byGroup.get(g.key);
+    return [g.label+"對前日", pp(prevDate ? rows.get(lastDate).pct-rows.get(prevDate).pct : null)];
+  }).map(([k,v])=>`<div class="br-stat"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
   const through = DATA.drawdown20_actions_through;
-  $("drawdown20-sub").textContent = `${last.date} · 過去252個交易日最高收盤價；歷史不足或跳價未能校正者不計`
-    + (through && through < last.date ? ` · 除權息校正截至 ${through}` : "");
+  $("drawdown20-sub").textContent = us
+    ? `${lastDate} · SPY／QQQ／SOXQ 當時持股快照；每天收盤後新增，不用今日成分股回填舊日。每檔等權，缺歷史者不計。`
+    : `${lastDate} · 過去252個交易日最高收盤價；歷史不足或跳價未能校正者不計`
+      + (through && through < lastDate ? ` · 除權息校正截至 ${through}` : "");
 
-  const values = series.flatMap(x=>[x.pct,otcByDate.get(x.date).pct]);
+  const values = series.flatMap(d=>groups.map(g=>byGroup.get(g.key).get(d).pct));
   const min = Math.min(...values), max = Math.max(...values);
   const pad = Math.max(2,(max-min)*.12);
   const lo = Math.max(0,min-pad), hi = Math.min(100,max+pad);
   const y = v => (100-(v-lo)/(hi-lo)*100).toFixed(2);
-  const line = (market,cls,label)=>{
-    const points = series.map((x,i)=>{
-      const row = market==="上市" ? x : otcByDate.get(x.date);
-      return `${i+0.5},${y(row.pct)}`;
-    }).join(" ");
-    const dots = series.map((x,i)=>{
-      const row = market==="上市" ? x : otcByDate.get(x.date);
-      return `<circle cx="${i+0.5}" cy="${y(row.pct)}" r="0.6">`
-        + `<title>${x.date} ${label} ${row.pct.toFixed(2)}% (${row.count}/${row.eligible})</title></circle>`;
+  const line = g=>{
+    const points = series.map((d,i)=>`${i+0.5},${y(byGroup.get(g.key).get(d).pct)}`).join(" ");
+    const dots = series.map((d,i)=>{
+      const row = byGroup.get(g.key).get(d);
+      return `<circle class="${i===series.length-1?"latest":""}" cx="${i+0.5}" cy="${y(row.pct)}" r="${series.length===1?1.5:.6}" style="fill:${g.color}">`
+        + `<title>${d} ${g.label} ${row.pct.toFixed(2)}% (${row.count}/${row.eligible})</title></circle>`;
     }).join("");
-    return `<polyline class="series ${cls}" points="${points}"></polyline>${dots}`;
+    return `<polyline class="series ${g.cls}" points="${points}"></polyline>${dots}`;
   };
-  $("drawdown20-chart").innerHTML = `<svg viewBox="0 0 ${series.length} 100" preserveAspectRatio="none" role="img" aria-label="上市與上櫃股票距52週高點跌至少20%的比例走勢">`
+  $("drawdown20-chart").innerHTML = `<svg viewBox="0 0 ${Math.max(series.length,2)} 100" preserveAspectRatio="none" role="img" aria-label="股票距52週高點跌至少20%的比例走勢">`
     + `<line class="baseline" x1="0" y1="50" x2="${series.length}" y2="50"></line>`
-    + line("上市","listed","上市") + line("上櫃","otc","上櫃") + `</svg>`;
+    + groups.map(line).join("") + `</svg>`;
   $("drawdown20-scale").innerHTML = `<span>縱軸 ${lo.toFixed(0)}%～${hi.toFixed(0)}%</span><span>比例越高，跌深的股票越多</span>`;
-  renderChartDates("drawdown20-dates", series);
+  $("drawdown20-legend").innerHTML = groups.map(g=>`<span><s style="background:${g.color}"></s>${g.label}</span>`).join("")
+    + `<span>每檔股票等權；圖表縱軸依目前區間縮放</span>`;
+  renderChartDates("drawdown20-dates", series.map(date=>({date})));
 }
 
 function renderRotation(){
@@ -1160,6 +1175,14 @@ fetchCurrentData("./data/us_latest.json")
     $("cnt-us").textContent = DATA.us.length;
     $("cnt-usthemes").textContent = (d.themes||[]).length;
     if(isUS()) render();
+  })
+  .catch(()=>{});
+
+fetchCurrentData("./data/us_index_drawdown_latest.json")
+  .then(r=>{ if(!r.ok) throw new Error(r.status); return r.json(); })
+  .then(d=>{
+    DATA.us_index_drawdown = d.rows || [];
+    if(tab === "usbreadth") renderBreadth();
   })
   .catch(()=>{});
 
