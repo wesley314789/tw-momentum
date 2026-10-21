@@ -182,6 +182,7 @@ tbody tr:hover{background:var(--surface)}
 .high-low-chart circle:hover{opacity:1}
 .drawdown20-block{margin-top:24px;padding-top:16px;border-top:1px solid var(--line)}
 .drawdown20-chart{height:135px;border-bottom:1px solid var(--line)}
+.drawdown20-chart .pending{height:100%;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:13px;text-align:center;padding:0 16px}
 .drawdown20-chart svg{display:block;width:100%;height:100%}
 .drawdown20-chart .series{fill:none;stroke-width:2;vector-effect:non-scaling-stroke}
 .drawdown20-chart .listed{stroke:var(--blue)}
@@ -936,15 +937,23 @@ function renderDrawdown20(){
     const r = byGroup.get(g.key).get(lastDate);
     $(ids[i]).innerHTML = `${r.pct.toFixed(2)}%<small>${r.count} / ${r.eligible} 檔</small>`;
   });
-  $("drawdown20-stats").innerHTML = groups.map(g=>{
+  $("drawdown20-stats").innerHTML = prevDate ? groups.map(g=>{
     const rows = byGroup.get(g.key);
-    return [g.label+"對前日", pp(prevDate ? rows.get(lastDate).pct-rows.get(prevDate).pct : null)];
-  }).map(([k,v])=>`<div class="br-stat"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
+    return [g.label+"對前日", pp(rows.get(lastDate).pct-rows.get(prevDate).pct)];
+  }).map(([k,v])=>`<div class="br-stat"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("") : "";
   const through = DATA.drawdown20_actions_through;
   $("drawdown20-sub").textContent = us
     ? `${lastDate} · SPY／QQQ／SOXQ 當時持股快照；每天收盤後新增，不用今日成分股回填舊日。每檔等權，缺歷史者不計。`
     : `${lastDate} · 過去252個交易日最高收盤價；歷史不足或跳價未能校正者不計`
       + (through && through < lastDate ? ` · 除權息校正截至 ${through}` : "");
+
+  if(series.length < 2){
+    $("drawdown20-chart").innerHTML = `<div class="pending">從 ${lastDate} 開始記錄；累積第二個收盤日後顯示走勢與每日變化。</div>`;
+    $("drawdown20-scale").innerHTML = "";
+    $("drawdown20-dates").innerHTML = "";
+    $("drawdown20-legend").innerHTML = "";
+    return;
+  }
 
   const values = series.flatMap(d=>groups.map(g=>byGroup.get(g.key).get(d).pct));
   const min = Math.min(...values), max = Math.max(...values);
