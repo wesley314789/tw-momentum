@@ -2,6 +2,36 @@
   "version": 1,
   "days": [
     {
+      "date": "2026-10-22",
+      "scan": {"changed": 0, "complete": 6, "partial": 0, "cumulative": 209},
+      "items": [
+        {
+          "title": "9 月外銷訂單年增 62.4%",
+          "fact": "經濟部公布 2026 年 9 月外銷訂單為 1,142.1 億美元，較上年同月增加 62.4%。",
+          "source_name": "經濟部外銷訂單統計（2026-10-20）",
+          "source_url": "https://mnscdn.moea.gov.tw/Mns/populace/news/News.aspx?kind=1&menu_id=40&news_id=124297"
+        },
+        {
+          "title": "緯穎展示 AI 機櫃與液冷技術",
+          "fact": "緯穎於 OCP Global Summit 2026 展示 AMD Helios 機櫃級方案，並介紹雙面冷板等散熱設計。",
+          "source_name": "緯穎公司新聞（2026-10-20）",
+          "source_url": "https://www.wiwynn.com/news/recap-of-wiwynn-at-ocp-global-summit-2026-scaling-ai-beyond-limits"
+        },
+        {
+          "title": "微軟公布 Maia 300 機櫃規格",
+          "fact": "微軟表示 Maia 300 機櫃包含 96 顆加速器，功率配置為 167 kW，計畫於 2027 年開始生產部署。",
+          "source_name": "微軟官方部落格（2026-10-12）",
+          "source_url": "https://blogs.microsoft.com/blog/2026/10/12/microsoft-to-expand-azure-maia-system-to-multi-gigawatt-deployments/"
+        },
+        {
+          "title": "蘋果公布首款折疊 iPhone Duo",
+          "fact": "蘋果公告 iPhone Duo 於 10 月 16 日開始預購、10 月 23 日開賣，產品採雙電池架構與均熱板散熱。",
+          "source_name": "蘋果公司新聞（2026-09-09）",
+          "source_url": "https://www.apple.com/newsroom/2026/09/apple-unveils-iphone-duo/"
+        }
+      ]
+    },
+    {
       "date": "2026-10-21",
       "scan": {"changed": 30, "complete": 6, "partial": 3, "cumulative": 203},
       "items": [
