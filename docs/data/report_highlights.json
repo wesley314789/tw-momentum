@@ -2,8 +2,42 @@
   "version": 1,
   "days": [
     {
+      "date": "2026-10-23",
+      "scan": {
+        "changed": 0,
+        "complete": 8,
+        "partial": 0,
+        "cumulative": 217
+      },
+      "items": [
+        {
+          "title": "NVIDIA 公布 800 VDC 分階段路線",
+          "fact": "NVIDIA 表示相容既有 AC 機房的 800 VDC 電源架預計於 2026 年下半年推出，機列電源中心預計於 2027 年供應。",
+          "source_name": "NVIDIA 官方部落格（2026-08-11）",
+          "source_url": "https://blogs.nvidia.com/blog/800-vdc-power-architecture-ai-factory/"
+        },
+        {
+          "title": "微軟公布 FY26 雲端實績",
+          "fact": "微軟 2026 會計年度年報指出，Microsoft Cloud 營收為 2,144 億美元、年增 27%；Azure 年增 41%，全年營收首度超過 1,000 億美元。",
+          "source_name": "Microsoft 2026 年報",
+          "source_url": "https://www.microsoft.com/investor/reports/ar26/"
+        },
+        {
+          "title": "CoreWeave 推出 Forge 開發平台",
+          "fact": "CoreWeave 公告 Forge 已推出，提供模型訓練、推論、評估及 agent 開發流程的整合環境。",
+          "source_name": "CoreWeave 公司新聞（2026-09-30）",
+          "source_url": "https://www.coreweave.com/news/coreweave-forge-launches-turning-the-ai-loop-production-run-into-a-better-model-and-agent"
+        }
+      ]
+    },
+    {
       "date": "2026-10-22",
-      "scan": {"changed": 0, "complete": 6, "partial": 0, "cumulative": 209},
+      "scan": {
+        "changed": 0,
+        "complete": 6,
+        "partial": 0,
+        "cumulative": 209
+      },
       "items": [
         {
           "title": "9 月外銷訂單年增 62.4%",
@@ -33,7 +67,12 @@
     },
     {
       "date": "2026-10-21",
-      "scan": {"changed": 30, "complete": 6, "partial": 3, "cumulative": 203},
+      "scan": {
+        "changed": 30,
+        "complete": 6,
+        "partial": 3,
+        "cumulative": 203
+      },
       "items": [
         {
           "title": "技嘉展示機櫃級 AI 基礎架構",
@@ -51,7 +90,12 @@
     },
     {
       "date": "2026-10-20",
-      "scan": {"changed": 0, "complete": 4, "partial": 0, "cumulative": 197},
+      "scan": {
+        "changed": 0,
+        "complete": 4,
+        "partial": 0,
+        "cumulative": 197
+      },
       "items": [
         {
           "title": "貿聯與 ams OSRAM 合作開發光互連",
@@ -69,7 +113,12 @@
     },
     {
       "date": "2026-10-19",
-      "scan": {"changed": 21, "complete": 7, "partial": 5, "cumulative": 193},
+      "scan": {
+        "changed": 21,
+        "complete": 7,
+        "partial": 5,
+        "cumulative": 193
+      },
       "items": [
         {
           "title": "啓碁展示 AI 資料中心網通方案",
@@ -93,7 +142,12 @@
     },
     {
       "date": "2026-10-18",
-      "scan": {"changed": 0, "complete": 7, "partial": 1, "cumulative": 186},
+      "scan": {
+        "changed": 0,
+        "complete": 7,
+        "partial": 1,
+        "cumulative": 186
+      },
       "items": [
         {
           "title": "臻鼎展示 1.6T 光模組與 AI 伺服器板",
